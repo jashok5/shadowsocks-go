@@ -1,0 +1,24 @@
+# Build artifacts
+/bin/
+/dist/
+/*.out
+/*.test
+/node
+
+# Runtime files
+/.phase5/
+/*.log
+/*.pid
+
+# Coverage
+/coverage.out
+/coverage.txt
+
+# IDE
+/.idea/
+/.vscode/
+/.opencode/
+
+# OS
+.DS_Store
+Thumbs.db

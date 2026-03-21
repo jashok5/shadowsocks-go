@@ -1,0 +1,32 @@
+node:
+  id: 1
+  get_port_offset_by_node_name: true
+
+api:
+  interface: modwebapi
+  url: https://api.example.com
+  token: REPLACE_WITH_YOUR_API_TOKEN
+  timeout: 10s
+  retry_max: 2
+  retry_backoff: 500ms
+  retry_max_backoff: 5s
+
+sync:
+  update_interval: 60s
+  failure_base_wait: 3s
+  failure_max_wait: 60s
+
+runtime:
+  driver: ssr
+  reconcile_workers: 8
+
+update:
+  enabled: true
+  repository: jashok5/shadowsocks-go
+  check_interval: 1h
+  timeout: 30s
+  allow_prerelease: false
+
+log:
+  level: info
+  format: console

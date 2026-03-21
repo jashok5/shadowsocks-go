@@ -1,0 +1,93 @@
+version: '3'
+
+vars:
+  APP_NAME: node
+  OUT_DIR: bin
+  OUT: '{{.OUT_DIR}}/{{.APP_NAME}}'
+  GOX_OSES: linux windows
+  GOX_ARCHES: amd64 arm64
+  GOX_OUT: '{{.OUT_DIR}}/{{.APP_NAME}}_{{"{{.OS}}"}}_{{"{{.Arch}}"}}'
+  COMMIT:
+    sh: git rev-parse --short HEAD 2>/dev/null || echo unknown
+  BUILD_TIME:
+    sh: date -u '+%Y-%m-%dT%H:%M:%SZ'
+  LDFLAGS: '-s -w -X main.commit={{.COMMIT}} -X main.buildTime={{.BUILD_TIME}}'
+
+tasks:
+  default:
+    desc: 列出可用任务
+    cmds:
+      - task --list
+
+  check:upx:
+    desc: 检查 upx 是否已安装
+    cmds:
+      - |
+        if ! command -v upx >/dev/null 2>&1; then
+          echo "error: 未检测到 upx，请先安装后再构建。"
+          echo "hint: macOS 可执行 brew install upx"
+          echo "hint: Linux 可使用包管理器安装 upx-ucl/upx"
+          exit 1
+        fi
+
+  check:gox:
+    desc: 检查 gox 是否已安装
+    cmds:
+      - |
+        if ! command -v gox >/dev/null 2>&1; then
+          echo "error: 未检测到 gox，请先安装后再执行多平台构建。"
+          echo "hint: 可执行 go install github.com/jashok5/gox@latest"
+          echo "hint: 并确保 $(go env GOPATH)/bin 已加入 PATH"
+          exit 1
+        fi
+
+  build:
+    desc: 本机构建（目标为 darwin 时跳过 upx 压缩）
+    deps: [check:upx]
+    cmds:
+      - mkdir -p {{.OUT_DIR}}
+      - CGO_ENABLED=0 go build -trimpath -ldflags "{{.LDFLAGS}}" -o {{.OUT}} .
+      - |
+        TARGET_GOOS="${GOOS:-$(go env GOOS)}"
+        if [ "$TARGET_GOOS" = "darwin" ]; then
+          echo "info: 目标平台为 darwin，跳过 upx 压缩"
+        else
+          upx {{.OUT}}
+        fi
+
+  build:linux:amd64:
+    desc: 构建 Linux amd64 二进制
+    deps: [check:upx]
+    cmds:
+      - mkdir -p {{.OUT_DIR}}
+      - CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -ldflags "{{.LDFLAGS}}" -o {{.OUT}} .
+      - upx {{.OUT}}
+
+  build:gox:
+    desc: 使用 gox 多平台构建并压缩
+    deps: [check:gox, check:upx]
+    cmds:
+      - mkdir -p {{.OUT_DIR}}
+      - CGO_ENABLED=0 gox -os="{{.GOX_OSES}}" -arch="{{.GOX_ARCHES}}" -ldflags "{{.LDFLAGS}}" -output "{{.GOX_OUT}}" .
+      - |
+        for file in {{.OUT_DIR}}/{{.APP_NAME}}_*; do
+          if [ ! -f "$file" ]; then
+            continue
+          fi
+
+          if upx "$file"; then
+            echo "info: 已压缩 $file"
+          else
+            echo "warn: 跳过压缩 $file（可能是 upx 不支持的平台/架构）"
+          fi
+        done
+
+  test:
+    desc: 运行测试
+    cmds:
+      - go test ./...
+
+  clean:
+    desc: 清理构建产物
+    cmds:
+      - rm -rf {{.OUT_DIR}}
