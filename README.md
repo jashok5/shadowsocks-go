@@ -49,13 +49,16 @@ cp configs/config.example.yaml configs/config.yaml
 
 ```yaml
 node:
-  id: 5
+  id: 1
   get_port_offset_by_node_name: true
+  enable_mu_host_rule: true
+  mu_regex: "%5m%id.%suffix"
+  mu_suffix: "windows.com"
 
 api:
   interface: modwebapi
-  url: https://example.com
-  token: your-token
+  url: https://api.example.com
+  token: REPLACE_WITH_YOUR_API_TOKEN
   timeout: 10s
   retry_max: 2
   retry_backoff: 500ms
@@ -67,15 +70,33 @@ sync:
   failure_max_wait: 60s
 
 update:
-  enabled: false
+  enabled: true
   repository: jashok5/shadowsocks-go
   check_interval: 1h
   timeout: 30s
   allow_prerelease: false
 
 runtime:
-  driver: ss
+  driver: ssr
   reconcile_workers: 8
+  on_unsupported_cipher: skip
+  dial_timeout: 8s
+  dns_prefer_ipv4: false
+  dns_resolver: ""
+  switchrule:
+    enabled: false
+    mode: none
+    expr: ""
+
+security:
+  auto_block:
+    enabled: false
+    backend: noop
+    sync_interval: 60s
+    protect_node_ip: true
+    static_whitelist:
+      - 127.0.0.1
+      - ::1
 
 log:
   level: info
@@ -100,7 +121,7 @@ log:
 - `sync.update_interval`：同步周期
 - `sync.failure_base_wait`：同步失败后的基础退避
 - `sync.failure_max_wait`：同步失败退避上限
-- `runtime.driver`：运行时驱动，`mock` 或 `ss`
+- `runtime.driver`：运行时驱动，`mock`、`ss` 或 `ssr`
 - `runtime.reconcile_workers`：端口收敛并发 worker 数
 - `runtime.on_unsupported_cipher`：不支持加密算法时策略，`skip`（跳过用户）或 `fail`（当前同步失败）
 - `runtime.dial_timeout`：TCP/UDP 上游目标连接超时
