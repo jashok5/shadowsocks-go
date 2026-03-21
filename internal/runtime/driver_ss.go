@@ -129,6 +129,7 @@ func (d *SSDriver) Snapshot(_ context.Context) (DriverSnapshot, error) {
 		UserOnlineIP: map[int][]string{},
 		Detect:       make(map[int][]int, len(d.ports)),
 		UserDetect:   map[int][]int{},
+		WrongIP:      []string{},
 	}
 
 	for port, rt := range d.ports {
@@ -305,7 +306,7 @@ func (d *SSDriver) serveTCP(rt *ssPortRuntime) {
 				return
 			}
 
-			remote, err := net.DialTimeout("tcp", target.String(), dialTimeout)
+			remote, err := dialTCPWithConfig(rt.ctx, rt.cfg, target.String())
 			if err != nil {
 				d.log.Warn("dial target failed", zap.Int("port", port), zap.String("target", target.String()), zap.Error(err))
 				return
@@ -362,7 +363,7 @@ func (d *SSDriver) processUDPPacket(rt *ssPortRuntime, port int, raddr net.Addr,
 	if target == nil {
 		return
 	}
-	targetAddr, err := net.ResolveUDPAddr("udp", target.String())
+	targetAddr, err := resolveUDPAddrWithConfig(rt.ctx, rt.cfg, target.String())
 	if err != nil {
 		return
 	}
@@ -384,7 +385,11 @@ func (d *SSDriver) processUDPPacket(rt *ssPortRuntime, port int, raddr net.Addr,
 		d.AddOnlineIP(port, udpAddr.IP.String())
 	}
 
-	conn, err := net.DialUDP("udp", nil, targetAddr)
+	network := "udp"
+	if rt.cfg.DNSPreferIPv4 {
+		network = "udp4"
+	}
+	conn, err := net.DialUDP(network, nil, targetAddr)
 	if err != nil {
 		return
 	}

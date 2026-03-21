@@ -15,6 +15,7 @@ import (
 	"strings"
 
 	"github.com/jashok5/shadowsocks-go/internal/config"
+	"go.yaml.in/yaml/v3"
 
 	"go.uber.org/zap"
 )
@@ -24,6 +25,7 @@ type Updater struct {
 	log        *zap.Logger
 	httpClient *http.Client
 	execPath   string
+	configPath string
 	owner      string
 	repo       string
 	goos       string
@@ -49,7 +51,7 @@ type githubReleaseAsset struct {
 	URL  string `json:"browser_download_url"`
 }
 
-func New(cfg config.UpdateConfig, log *zap.Logger) (*Updater, error) {
+func New(cfg config.UpdateConfig, log *zap.Logger, configPath string) (*Updater, error) {
 	repo := strings.TrimSpace(cfg.Repository)
 	parts := strings.Split(repo, "/")
 	if len(parts) != 2 || strings.TrimSpace(parts[0]) == "" || strings.TrimSpace(parts[1]) == "" {
@@ -67,6 +69,7 @@ func New(cfg config.UpdateConfig, log *zap.Logger) (*Updater, error) {
 		log:        log,
 		httpClient: &http.Client{Timeout: cfg.Timeout},
 		execPath:   execPath,
+		configPath: strings.TrimSpace(configPath),
 		owner:      strings.TrimSpace(parts[0]),
 		repo:       strings.TrimSpace(parts[1]),
 		goos:       runtime.GOOS,
@@ -123,10 +126,29 @@ func (u *Updater) CheckAndUpdate(ctx context.Context, currentVersion string) (Re
 	if u.goos != "linux" {
 		return Result{}, fmt.Errorf("auto replace unsupported on %s", u.goos)
 	}
+	if err := u.syncConfigWithRelease(ctx, rel.TagName, stagedDir); err != nil {
+		return Result{}, fmt.Errorf("sync config with release: %w", err)
+	}
 	if err := replaceBinaryLinux(u.execPath, stagedBin); err != nil {
 		return Result{}, err
 	}
 	return Result{LatestVersion: rel.TagName, DownloadedFile: stagedBin, Updated: true, RestartNeeded: true}, nil
+}
+
+func (u *Updater) syncConfigWithRelease(ctx context.Context, tag string, stagedDir string) error {
+	if u.configPath == "" {
+		return nil
+	}
+	url := fmt.Sprintf("https://raw.githubusercontent.com/%s/%s/%s/configs/config.example.yaml", u.owner, u.repo, tag)
+	stagedExample := filepath.Join(stagedDir, "config.example.yaml")
+	if err := u.downloadToFile(ctx, url, stagedExample, 0o644); err != nil {
+		return fmt.Errorf("download config example: %w", err)
+	}
+	if err := mergeConfigFile(u.configPath, stagedExample); err != nil {
+		return err
+	}
+	u.log.Info("config synced from release example", zap.String("tag", tag), zap.String("config", u.configPath))
+	return nil
 }
 
 func (u *Updater) fetchRelease(ctx context.Context) (githubRelease, error) {
@@ -355,4 +377,122 @@ func compareVersion(a semver, b semver) int {
 		return 1
 	}
 	return -1
+}
+
+func mergeConfigFile(currentPath string, newExamplePath string) error {
+	baseContent, err := os.ReadFile(newExamplePath)
+	if err != nil {
+		return fmt.Errorf("read new config example: %w", err)
+	}
+
+	mode := os.FileMode(0o644)
+	overrideContent := []byte{}
+	if st, statErr := os.Stat(currentPath); statErr == nil {
+		mode = st.Mode().Perm()
+		b, readErr := os.ReadFile(currentPath)
+		if readErr != nil {
+			return fmt.Errorf("read current config: %w", readErr)
+		}
+		overrideContent = b
+	} else if !os.IsNotExist(statErr) {
+		return fmt.Errorf("stat current config: %w", statErr)
+	}
+
+	merged, err := mergeYAML(baseContent, overrideContent)
+	if err != nil {
+		return err
+	}
+
+	tmp := currentPath + ".tmp"
+	if err := os.WriteFile(tmp, merged, mode); err != nil {
+		return fmt.Errorf("write merged config tmp: %w", err)
+	}
+	if _, err := config.Load(tmp); err != nil {
+		_ = os.Remove(tmp)
+		return fmt.Errorf("validate merged config: %w", err)
+	}
+
+	if _, err := os.Stat(currentPath); err == nil {
+		backup := currentPath + ".bak"
+		_ = os.Remove(backup)
+		if err := copyFile(currentPath, backup, mode); err != nil {
+			_ = os.Remove(tmp)
+			return fmt.Errorf("backup current config: %w", err)
+		}
+	}
+
+	if err := os.Rename(tmp, currentPath); err != nil {
+		_ = os.Remove(tmp)
+		return fmt.Errorf("activate merged config: %w", err)
+	}
+	return nil
+}
+
+func mergeYAML(baseContent []byte, overrideContent []byte) ([]byte, error) {
+	base, err := decodeYAMLMap(baseContent)
+	if err != nil {
+		return nil, fmt.Errorf("decode new config example: %w", err)
+	}
+	override := make(map[string]any)
+	if len(strings.TrimSpace(string(overrideContent))) > 0 {
+		override, err = decodeYAMLMap(overrideContent)
+		if err != nil {
+			return nil, fmt.Errorf("decode current config: %w", err)
+		}
+	}
+
+	merged := deepMergeMaps(base, override)
+	out, err := yaml.Marshal(merged)
+	if err != nil {
+		return nil, fmt.Errorf("marshal merged config: %w", err)
+	}
+	return out, nil
+}
+
+func decodeYAMLMap(content []byte) (map[string]any, error) {
+	out := make(map[string]any)
+	if len(strings.TrimSpace(string(content))) == 0 {
+		return out, nil
+	}
+	if err := yaml.Unmarshal(content, &out); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func deepMergeMaps(base map[string]any, override map[string]any) map[string]any {
+	merged := make(map[string]any, len(base))
+	for k, v := range base {
+		merged[k] = v
+	}
+	for k, v := range override {
+		baseMap, baseIsMap := merged[k].(map[string]any)
+		overrideMap, overrideIsMap := v.(map[string]any)
+		if baseIsMap && overrideIsMap {
+			merged[k] = deepMergeMaps(baseMap, overrideMap)
+			continue
+		}
+		merged[k] = v
+	}
+	return merged
+}
+
+func copyFile(src string, dst string, mode os.FileMode) error {
+	in, err := os.Open(src)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = in.Close() }()
+	out, err := os.OpenFile(dst, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, mode)
+	if err != nil {
+		return err
+	}
+	if _, err = io.Copy(out, in); err != nil {
+		_ = out.Close()
+		return err
+	}
+	if err = out.Close(); err != nil {
+		return err
+	}
+	return nil
 }

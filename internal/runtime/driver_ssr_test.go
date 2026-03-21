@@ -34,3 +34,13 @@ func TestCanHotReloadSSR(t *testing.T) {
 		t.Fatalf("non-mu should not hot reload users")
 	}
 }
+
+func TestHostFirewallMUHosts(t *testing.T) {
+	h := newHostFirewall("", "", []string{"abc.example.com", "def.example.com"}, DetectBuckets{}, nil)
+	if !h.JudgeHostWithReport("abc.example.com:443", 10) {
+		t.Fatalf("expected allowed host")
+	}
+	if h.JudgeHostWithReport("zzz.example.com:443", 10) {
+		t.Fatalf("expected rejected host")
+	}
+}

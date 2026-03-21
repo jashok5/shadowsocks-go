@@ -46,3 +46,24 @@ func TestSleepContext(t *testing.T) {
 		t.Fatalf("sleepContext should return false when context canceled")
 	}
 }
+
+func TestResolvePortOffsetByNodeName(t *testing.T) {
+	nodes := []map[string]any{
+		{"id": 2, "name": "HK #9900"},
+		{"id": 3, "node_name": "SG #6600"},
+	}
+	offset, name, ok := resolvePortOffsetByNodeName(nodes, 2)
+	if !ok || offset != 9900 || name != "HK #9900" {
+		t.Fatalf("unexpected result: ok=%v offset=%d name=%q", ok, offset, name)
+	}
+
+	offset, name, ok = resolvePortOffsetByNodeName(nodes, 3)
+	if !ok || offset != 6600 || name != "SG #6600" {
+		t.Fatalf("unexpected node_name parse: ok=%v offset=%d name=%q", ok, offset, name)
+	}
+
+	_, _, ok = resolvePortOffsetByNodeName([]map[string]any{{"id": 4, "name": "JP"}}, 4)
+	if ok {
+		t.Fatalf("expected no offset when pattern missing")
+	}
+}

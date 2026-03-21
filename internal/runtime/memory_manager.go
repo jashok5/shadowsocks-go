@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"sort"
+	"strings"
 	"sync"
 
 	"github.com/jashok5/shadowsocks-go/internal/model"
@@ -62,8 +63,13 @@ type reconcileOp struct {
 }
 
 func (m *MemoryManager) Sync(ctx context.Context, in SyncInput) error {
+	onUnsupported := strings.ToLower(strings.TrimSpace(in.Runtime.OnUnsupportedCipher))
+	if onUnsupported == "" {
+		onUnsupported = "skip"
+	}
 	muUsers := make(map[int]string)
 	muUserSpeed := make(map[int]float64)
+	muHostsByUserID := buildMUHostMap(in.Users, in.MUHost)
 	for _, u := range in.Users {
 		if u.IsMultiUser == 0 {
 			muUsers[u.ID] = u.Passwd
@@ -76,17 +82,24 @@ func (m *MemoryManager) Sync(ctx context.Context, in SyncInput) error {
 	ruleHash := hashRuleBuckets(buckets)
 
 	next := make(map[int]serverState, len(users))
+	unsupportedSkipped := 0
 	for _, u := range users {
 		if !isCipherSupported(u.Method) {
+			err := fmt.Errorf("unsupported cipher for user_id=%d port=%d method=%s", u.ID, u.Port, u.Method)
+			if onUnsupported == "fail" {
+				return err
+			}
+			unsupportedSkipped++
 			m.log.Warn("skip user due to unsupported cipher", zap.Int("user_id", u.ID), zap.Int("port", u.Port), zap.String("method", u.Method))
 			continue
 		}
 		port := effectivePort(u, in.NodeInfo)
-		cfg := buildPortConfig(u, in.NodeInfo, buckets, ruleHash)
+		cfg := buildPortConfig(u, in.NodeInfo, buckets, ruleHash, in.Runtime)
 		if u.IsMultiUser != 0 {
 			cfg.Users = cloneIntStringMap(muUsers)
 			cfg.UserSpeed = cloneIntFloatMap(muUserSpeed)
-			cfg.Fingerprint = buildFingerprintWithUsers(u, in.NodeInfo, ruleHash, cfg.Users)
+			cfg.MUHosts = collectMUHosts(muHostsByUserID)
+			cfg.Fingerprint = buildFingerprintWithUsers(u, in.NodeInfo, ruleHash, cfg.Users, cfg.MUHosts)
 		}
 		next[port] = serverState{
 			Port:   port,
@@ -133,11 +146,14 @@ func (m *MemoryManager) Sync(ctx context.Context, in SyncInput) error {
 	m.rules = append(m.rules[:0], in.Rules...)
 
 	m.log.Info("runtime sync reconciled",
+		zap.Int("input_users", len(in.Users)),
+		zap.Int("effective_users", len(users)),
 		zap.Int("desired", len(next)),
 		zap.Int("active", len(next)),
 		zap.Int("added", added),
 		zap.Int("updated", updated),
 		zap.Int("removed", removed),
+		zap.Int("unsupported_skipped", unsupportedSkipped),
 	)
 	return nil
 }
@@ -255,6 +271,7 @@ func (m *MemoryManager) Snapshot(ctx context.Context) (Snapshot, error) {
 		UserOnlineIP: userOnlineIP,
 		Detect:       detect,
 		UserDetect:   driverSnap.UserDetect,
+		WrongIP:      driverSnap.WrongIP,
 	}, nil
 }
 
@@ -380,7 +397,7 @@ func classifyRules(rules []model.DetectRule) DetectBuckets {
 	return b
 }
 
-func buildPortConfig(u model.User, node model.NodeInfo, buckets DetectBuckets, ruleHash string) PortConfig {
+func buildPortConfig(u model.User, node model.NodeInfo, buckets DetectBuckets, ruleHash string, opts RuntimeOptions) PortConfig {
 	port := effectivePort(u, node)
 	users := map[int]string{}
 	if u.IsMultiUser != 0 {
@@ -402,11 +419,15 @@ func buildPortConfig(u model.User, node model.NodeInfo, buckets DetectBuckets, r
 		NodeSpeedLimit: maxSpeed(node.NodeSpeedLimit, u.NodeSpeed),
 		NodeTraffic:    node.TrafficRate,
 		IsMultiUser:    u.IsMultiUser != 0,
+		MUHosts:        nil,
+		DialTimeout:    opts.DialTimeout,
+		DNSResolver:    strings.TrimSpace(opts.DNSResolver),
+		DNSPreferIPv4:  opts.DNSPreferIPv4,
 		Detect: DetectBuckets{
 			Text: cloneStringMap(buckets.Text),
 			Hex:  cloneStringMap(buckets.Hex),
 		},
-		Fingerprint: buildFingerprintWithUsers(u, node, ruleHash, users),
+		Fingerprint: buildFingerprintWithUsers(u, node, ruleHash, users, nil),
 	}
 }
 
@@ -426,9 +447,10 @@ func cloneIntFloatMap(in map[int]float64) map[int]float64 {
 	return out
 }
 
-func buildFingerprintWithUsers(u model.User, node model.NodeInfo, ruleHash string, users map[int]string) string {
+func buildFingerprintWithUsers(u model.User, node model.NodeInfo, ruleHash string, users map[int]string, muHosts []string) string {
 	usersHash := hashUsers(users)
-	return buildFingerprint(u, node, ruleHash+"|"+usersHash)
+	hostHash := hashMUHosts(muHosts)
+	return buildFingerprint(u, node, ruleHash+"|"+usersHash+"|"+hostHash)
 }
 
 func hashUsers(users map[int]string) string {
@@ -450,6 +472,27 @@ func hashUsers(users map[int]string) string {
 		return arr[i].Pass < arr[j].Pass
 	})
 	b, _ := json.Marshal(arr)
+	sum := sha256.Sum256(b)
+	return hex.EncodeToString(sum[:])
+}
+
+func hashMUHosts(hosts []string) string {
+	if len(hosts) == 0 {
+		return ""
+	}
+	cp := make([]string, 0, len(hosts))
+	for _, h := range hosts {
+		h = strings.TrimSpace(h)
+		if h == "" {
+			continue
+		}
+		cp = append(cp, h)
+	}
+	if len(cp) == 0 {
+		return ""
+	}
+	sort.Strings(cp)
+	b, _ := json.Marshal(cp)
 	sum := sha256.Sum256(b)
 	return hex.EncodeToString(sum[:])
 }

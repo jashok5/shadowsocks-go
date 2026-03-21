@@ -15,9 +15,10 @@ func TestMemoryManagerMUOnlyAndPortOffset(t *testing.T) {
 
 	in := SyncInput{
 		NodeInfo: model.NodeInfo{MUOnly: 1, PortOffset: 1000},
+		MUHost:   MUHostRule{Enabled: true, Regex: "%5m%id.%suffix", Suffix: "example.com"},
 		Users: []model.User{
-			{ID: 1, Port: 2000, IsMultiUser: 0},
-			{ID: 2, Port: 3000, IsMultiUser: 1},
+			{ID: 1, Port: 2000, IsMultiUser: 0, Passwd: "p1", Method: "aes-256-gcm", Obfs: "tls1.2_ticket_auth", Protocol: "auth_aes128_md5"},
+			{ID: 2, Port: 3000, IsMultiUser: 1, Passwd: "pmu", Method: "aes-256-gcm", Obfs: "tls1.2_ticket_auth", Protocol: "auth_aes128_md5"},
 		},
 		Rules: nil,
 	}
@@ -40,6 +41,11 @@ func TestMemoryManagerMUOnlyAndPortOffset(t *testing.T) {
 	starts, _, _ := drv.Stats()
 	if starts != 1 {
 		t.Fatalf("expected 1 start call, got %d", starts)
+	}
+
+	cfg := drv.configs[4000]
+	if len(cfg.MUHosts) != 1 || cfg.MUHosts[0] != "f32de1.example.com" {
+		t.Fatalf("unexpected MU hosts: %#v", cfg.MUHosts)
 	}
 }
 
@@ -111,5 +117,20 @@ func TestMemoryManagerStopRemovedPorts(t *testing.T) {
 	}
 	if stops != 1 {
 		t.Fatalf("expected stops=1, got %d", stops)
+	}
+}
+
+func TestMemoryManagerUnsupportedCipherFail(t *testing.T) {
+	drv := NewMockDriver()
+	mgr := NewMemoryManagerWithDriver(zap.NewNop(), drv, 2)
+	err := mgr.Sync(context.Background(), SyncInput{
+		NodeInfo: model.NodeInfo{},
+		Users: []model.User{
+			{ID: 1, Port: 1001, Method: "rc4-md5", Passwd: "p"},
+		},
+		Runtime: RuntimeOptions{OnUnsupportedCipher: "fail"},
+	})
+	if err == nil {
+		t.Fatalf("expected error on unsupported cipher with fail mode")
 	}
 }

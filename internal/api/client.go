@@ -101,6 +101,12 @@ func (c *Client) GetDetectRules(ctx context.Context) ([]model.DetectRule, error)
 	return out, err
 }
 
+func (c *Client) GetNodes(ctx context.Context) ([]map[string]any, error) {
+	var out []map[string]any
+	err := c.get(ctx, "nodes", nil, &out)
+	return out, err
+}
+
 func (c *Client) PostUserTraffic(ctx context.Context, data []model.UserTraffic) error {
 	nodeID := c.getNodeID()
 	body := map[string]any{"data": data}
@@ -128,6 +134,42 @@ func (c *Client) PostDetectLog(ctx context.Context, data []model.DetectLog) erro
 	body := map[string]any{"data": data}
 	params := map[string]string{"node_id": strconv.Itoa(nodeID)}
 	return c.post(ctx, "users/detectlog", params, body)
+}
+
+func (c *Client) PostBlockIP(ctx context.Context, ips []string) error {
+	nodeID := c.getNodeID()
+	if len(ips) == 0 {
+		return nil
+	}
+	type blockItem struct {
+		IP string `json:"ip"`
+	}
+	data := make([]blockItem, 0, len(ips))
+	for _, ip := range ips {
+		ip = strings.TrimSpace(ip)
+		if ip == "" {
+			continue
+		}
+		data = append(data, blockItem{IP: ip})
+	}
+	if len(data) == 0 {
+		return nil
+	}
+	body := map[string]any{"data": data}
+	params := map[string]string{"node_id": strconv.Itoa(nodeID)}
+	return c.post(ctx, "func/block_ip", params, body)
+}
+
+func (c *Client) GetBlockIP(ctx context.Context) ([]map[string]any, error) {
+	var out []map[string]any
+	err := c.get(ctx, "func/block_ip", nil, &out)
+	return out, err
+}
+
+func (c *Client) GetUnblockIP(ctx context.Context) ([]map[string]any, error) {
+	var out []map[string]any
+	err := c.get(ctx, "func/unblock_ip", nil, &out)
+	return out, err
 }
 
 func (c *Client) get(ctx context.Context, uri string, params map[string]string, out any) error {

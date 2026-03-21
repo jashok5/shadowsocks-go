@@ -1,6 +1,9 @@
 node:
   id: 1
   get_port_offset_by_node_name: true
+  enable_mu_host_rule: true
+  mu_regex: "%5m%id.%suffix"
+  mu_suffix: "windows.com"
 
 api:
   interface: modwebapi
@@ -19,6 +22,24 @@ sync:
 runtime:
   driver: ssr
   reconcile_workers: 8
+  on_unsupported_cipher: skip
+  dial_timeout: 8s
+  dns_prefer_ipv4: false
+  dns_resolver: ""
+  switchrule:
+    enabled: false
+    mode: none
+    expr: ""
+
+security:
+  auto_block:
+    enabled: false
+    backend: noop
+    sync_interval: 60s
+    protect_node_ip: true
+    static_whitelist:
+      - 127.0.0.1
+      - ::1
 
 update:
   enabled: true

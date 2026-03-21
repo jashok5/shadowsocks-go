@@ -30,6 +30,7 @@ func (m *NoopManager) Snapshot(_ context.Context) (Snapshot, error) {
 		UserOnlineIP: map[int][]string{},
 		Detect:       map[int][]int{},
 		UserDetect:   map[int][]int{},
+		WrongIP:      []string{},
 	}, nil
 }
 

@@ -2,6 +2,7 @@ package runtime
 
 import (
 	"context"
+	"time"
 
 	"github.com/jashok5/shadowsocks-go/internal/model"
 )
@@ -28,8 +29,12 @@ type PortConfig struct {
 	NodeSpeedLimit float64
 	NodeTraffic    float64
 	IsMultiUser    bool
+	MUHosts        []string
 	Detect         DetectBuckets
 	Fingerprint    string
+	DialTimeout    time.Duration
+	DNSResolver    string
+	DNSPreferIPv4  bool
 }
 
 type DriverSnapshot struct {
@@ -39,6 +44,7 @@ type DriverSnapshot struct {
 	UserOnlineIP map[int][]string
 	Detect       map[int][]int
 	UserDetect   map[int][]int
+	WrongIP      []string
 }
 
 type Driver interface {

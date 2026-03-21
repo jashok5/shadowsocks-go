@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -104,7 +105,7 @@ func (d *SSRDriver) Start(_ context.Context, cfg PortConfig) error {
 		OnlineReport: onlineReporter(func(uid int, ip string) {
 			d.addOnlineIP(cfg.Port, uid, ip)
 		}),
-		HostFirewall: newHostFirewall(cfg.ForbiddenIP, cfg.ForbiddenPort, cfg.Detect, func(ruleID int) {
+		HostFirewall: newHostFirewall(cfg.ForbiddenIP, cfg.ForbiddenPort, cfg.MUHosts, cfg.Detect, func(ruleID int) {
 			d.markDetect(cfg.Port, ruleID)
 		}),
 	}
@@ -233,8 +234,13 @@ func (d *SSRDriver) Snapshot(_ context.Context) (DriverSnapshot, error) {
 		}
 		userDetect[uid] = ids
 	}
+	wrongIP := make([]string, 0, len(d.wrongIP))
+	for ip := range d.wrongIP {
+		wrongIP = append(wrongIP, ip)
+	}
+	sort.Strings(wrongIP)
 
-	return DriverSnapshot{Transfer: transfer, UserTransfer: userTransfer, OnlineIP: online, UserOnlineIP: userOnline, Detect: detect, UserDetect: userDetect}, nil
+	return DriverSnapshot{Transfer: transfer, UserTransfer: userTransfer, OnlineIP: online, UserOnlineIP: userOnline, Detect: detect, UserDetect: userDetect, WrongIP: wrongIP}, nil
 }
 
 func (d *SSRDriver) Close(ctx context.Context) error {
@@ -340,12 +346,21 @@ func (r onlineReporter) Online(uid int, ip string) { r(uid, ip) }
 type hostFirewall struct {
 	forbiddenIP   string
 	forbiddenPort string
+	muHosts       map[string]struct{}
 	detect        DetectBuckets
 	onRuleHit     func(int)
 }
 
-func newHostFirewall(ip, port string, detect DetectBuckets, onRuleHit func(int)) *hostFirewall {
-	return &hostFirewall{forbiddenIP: ip, forbiddenPort: port, detect: detect, onRuleHit: onRuleHit}
+func newHostFirewall(ip, port string, muHosts []string, detect DetectBuckets, onRuleHit func(int)) *hostFirewall {
+	hostMap := make(map[string]struct{}, len(muHosts))
+	for _, h := range muHosts {
+		h = normalizeHostOnly(h)
+		if h == "" {
+			continue
+		}
+		hostMap[h] = struct{}{}
+	}
+	return &hostFirewall{forbiddenIP: ip, forbiddenPort: port, muHosts: hostMap, detect: detect, onRuleHit: onRuleHit}
 }
 
 func (h *hostFirewall) JudgeHostWithReport(ipOrDomain string, uid int) bool {
@@ -362,6 +377,15 @@ func (h *hostFirewall) JudgeHostWithReport(ipOrDomain string, uid int) bool {
 	}
 	if port > 0 && blockedPort(port, h.forbiddenPort) {
 		return false
+	}
+	if len(h.muHosts) > 0 {
+		hostOnly := normalizeHostOnly(host)
+		if hostOnly == "" {
+			return false
+		}
+		if _, ok := h.muHosts[hostOnly]; !ok {
+			return false
+		}
 	}
 	blockedByDetect := false
 	walkMatchedRules(ipOrDomain, h.detect, func(ruleID int) bool {
@@ -412,6 +436,40 @@ func canHotReloadSSR(oldCfg, newCfg PortConfig) bool {
 	}
 	if oldCfg.ForbiddenIP != newCfg.ForbiddenIP || oldCfg.ForbiddenPort != newCfg.ForbiddenPort {
 		return false
+	}
+	if !sameStringSlice(oldCfg.MUHosts, newCfg.MUHosts) {
+		return false
+	}
+	return true
+}
+
+func normalizeHostOnly(v string) string {
+	v = strings.TrimSpace(v)
+	if v == "" {
+		return ""
+	}
+	if strings.HasPrefix(v, "[") {
+		if idx := strings.Index(v, "]"); idx > 1 {
+			return strings.ToLower(v[1:idx])
+		}
+	}
+	if h, _, err := net.SplitHostPort(v); err == nil {
+		return strings.ToLower(strings.TrimSpace(h))
+	}
+	if i := strings.Index(v, ":"); i > 0 && strings.Count(v, ":") == 1 {
+		return strings.ToLower(strings.TrimSpace(v[:i]))
+	}
+	return strings.ToLower(v)
+}
+
+func sameStringSlice(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
 	}
 	return true
 }
@@ -490,7 +548,7 @@ func (d *SSRDriver) serveSSRTCP(inst *ssrInstance) {
 			upLimiter := inst.limitUp[uid]
 			downLimiter := inst.limitDown[uid]
 
-			remote, err := net.DialTimeout("tcp", addr.String(), 8*time.Second)
+			remote, err := dialTCPWithConfig(inst.ctx, inst.cfg, addr.String())
 			if err != nil {
 				d.log.Debug("ssr tcp dial target failed", zap.String("target", addr.String()), zap.Error(err))
 				return
@@ -614,7 +672,7 @@ func (d *SSRDriver) serveSSRUDP(inst *ssrInstance) {
 			}
 			udpMap.Add(addr, ssrd, remotePacketConn)
 		}
-		remoteResolve, rerr := net.ResolveUDPAddr("udp", remoteAddr.String())
+		remoteResolve, rerr := resolveUDPAddrWithConfig(inst.ctx, inst.cfg, remoteAddr.String())
 		if rerr != nil {
 			d.markWrongIP(addrIP(addr))
 			continue

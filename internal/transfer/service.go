@@ -6,12 +6,14 @@ import (
 	"fmt"
 	"math"
 	"os"
+	"regexp"
 	"strconv"
 	"strings"
 	"sync/atomic"
 	"time"
 
 	"github.com/jashok5/shadowsocks-go/internal/api"
+	"github.com/jashok5/shadowsocks-go/internal/autoblock"
 	"github.com/jashok5/shadowsocks-go/internal/config"
 	"github.com/jashok5/shadowsocks-go/internal/logger"
 	"github.com/jashok5/shadowsocks-go/internal/model"
@@ -31,6 +33,9 @@ type Service struct {
 	updater     *updater.Updater
 	version     string
 	nextUpdate  time.Time
+	autoBlock   *autoblock.Service
+	abCancel    context.CancelFunc
+	abDone      chan struct{}
 	lastTraffic map[int]model.PortTransfer
 	failCount   int64
 }
@@ -40,6 +45,10 @@ var ErrRestartRequired = errors.New("restart required after update")
 func NewService(cfg config.Config, configPath string, log *zap.Logger, client *api.Client, rt runtime.Manager, up *updater.Updater, currentVersion string) *Service {
 	client.SetNodeID(cfg.Node.ID)
 	client.UpdateRetryPolicy(cfg.API.RetryMax, cfg.API.RetryBackoff, cfg.API.RetryMaxBackoff)
+	var ab *autoblock.Service
+	if cfg.Security.AutoBlock.Enabled {
+		ab = autoblock.New(log, cfg.Security.AutoBlock, client, rt)
+	}
 	return &Service{
 		cfg:         cfg,
 		configPath:  configPath,
@@ -48,11 +57,24 @@ func NewService(cfg config.Config, configPath string, log *zap.Logger, client *a
 		runtime:     rt,
 		updater:     up,
 		version:     strings.TrimSpace(currentVersion),
+		autoBlock:   ab,
 		lastTraffic: make(map[int]model.PortTransfer),
 	}
 }
 
 func (s *Service) Run(ctx context.Context) error {
+	if s.autoBlock != nil && s.abDone == nil {
+		abCtx, cancel := context.WithCancel(ctx)
+		s.abCancel = cancel
+		s.abDone = make(chan struct{})
+		go func() {
+			defer close(s.abDone)
+			if err := s.autoBlock.Run(abCtx); err != nil && !errors.Is(err, context.Canceled) {
+				s.log.Warn("auto_block stopped", logger.Err(err))
+			}
+		}()
+	}
+
 	if err := s.syncOnce(ctx); err != nil {
 		s.log.Warn("first sync failed", logger.Err(err))
 	}
@@ -86,6 +108,18 @@ func (s *Service) Run(ctx context.Context) error {
 }
 
 func (s *Service) Stop(ctx context.Context) error {
+	if s.abCancel != nil {
+		s.abCancel()
+		s.abCancel = nil
+	}
+	if s.abDone != nil {
+		select {
+		case <-s.abDone:
+			s.abDone = nil
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+	}
 	return s.runtime.Stop(ctx)
 }
 
@@ -124,10 +158,52 @@ func (s *Service) syncOnce(ctx context.Context) error {
 	if err := g.Wait(); err != nil {
 		return err
 	}
+	usersInput := users
+	users, filteredBySwitch, switchErr := applySwitchRule(usersInput, s.cfg.RT.SwitchRule)
+	if switchErr != nil {
+		s.log.Warn("switchrule evaluate failed, fallback to unfiltered users", logger.Err(switchErr))
+		users = usersInput
+		filteredBySwitch = 0
+	}
+	if filteredBySwitch > 0 {
+		s.log.Info("switchrule filtered users", zap.Int("before", len(usersInput)), zap.Int("after", len(users)), zap.Int("filtered", filteredBySwitch), zap.String("mode", s.cfg.RT.SwitchRule.Mode))
+	}
+	if s.cfg.Node.GetPortOffsetByNodeName {
+		nodes, nodesErr := s.api.GetNodes(ctx)
+		if nodesErr != nil {
+			s.log.Warn("pull nodes for port offset by node name failed", logger.Err(nodesErr))
+		} else if offset, nodeName, ok := resolvePortOffsetByNodeName(nodes, s.cfg.Node.ID); ok {
+			if offset != nodeInfo.PortOffset {
+				s.log.Info("port offset resolved from node name", zap.Int("node_id", s.cfg.Node.ID), zap.String("node_name", nodeName), zap.Int("old", nodeInfo.PortOffset), zap.Int("new", offset))
+			}
+			nodeInfo.PortOffset = offset
+		}
+	}
 	s.log.Debug("sync phase done", zap.String("phase", "pull_remote"), zap.Duration("cost", time.Since(phase)))
 
 	phase = time.Now()
-	if err := s.runtime.Sync(ctx, runtime.SyncInput{NodeInfo: nodeInfo, Users: users, Rules: rules}); err != nil {
+	in := runtime.SyncInput{
+		NodeInfo: nodeInfo,
+		Users:    users,
+		Rules:    rules,
+		MUHost: runtime.MUHostRule{
+			Enabled: s.cfg.Node.EnableMUHostRule,
+			Regex:   s.cfg.Node.MURegex,
+			Suffix:  s.cfg.Node.MUSuffix,
+		},
+		SwitchRule: runtime.UserSwitchRule{
+			Enabled: s.cfg.RT.SwitchRule.Enabled,
+			Mode:    s.cfg.RT.SwitchRule.Mode,
+			Expr:    s.cfg.RT.SwitchRule.Expr,
+		},
+		Runtime: runtime.RuntimeOptions{
+			OnUnsupportedCipher: s.cfg.RT.OnUnsupportedCipher,
+			DialTimeout:         s.cfg.RT.DialTimeout,
+			DNSResolver:         s.cfg.RT.DNSResolver,
+			DNSPreferIPv4:       s.cfg.RT.DNSPreferIPv4,
+		},
+	}
+	if err := s.runtime.Sync(ctx, in); err != nil {
 		return err
 	}
 	s.log.Debug("sync phase done", zap.String("phase", "runtime_sync"), zap.Duration("cost", time.Since(phase)))
@@ -188,6 +264,63 @@ func (s *Service) syncOnce(ctx context.Context) error {
 
 	s.log.Info("sync cycle complete", zap.Int("users", len(users)), zap.Int("rules", len(rules)), zap.Duration("cost", time.Since(cycleStart)))
 	return nil
+}
+
+var nodeNameOffsetPattern = regexp.MustCompile(`#(\d+)`)
+
+func resolvePortOffsetByNodeName(nodes []map[string]any, nodeID int) (int, string, bool) {
+	for _, n := range nodes {
+		id, ok := parseNodeID(n)
+		if !ok || id != nodeID {
+			continue
+		}
+		name := parseNodeName(n)
+		if name == "" {
+			return 0, "", false
+		}
+		m := nodeNameOffsetPattern.FindStringSubmatch(name)
+		if len(m) < 2 {
+			return 0, name, false
+		}
+		offset, err := strconv.Atoi(m[1])
+		if err != nil {
+			return 0, name, false
+		}
+		return offset, name, true
+	}
+	return 0, "", false
+}
+
+func parseNodeID(node map[string]any) (int, bool) {
+	for _, key := range []string{"id", "node_id"} {
+		raw, ok := node[key]
+		if !ok {
+			continue
+		}
+		s := strings.TrimSpace(fmt.Sprint(raw))
+		if s == "" {
+			continue
+		}
+		id, err := strconv.Atoi(s)
+		if err == nil {
+			return id, true
+		}
+	}
+	return 0, false
+}
+
+func parseNodeName(node map[string]any) string {
+	for _, key := range []string{"name", "node_name"} {
+		raw, ok := node[key]
+		if !ok {
+			continue
+		}
+		v := strings.TrimSpace(fmt.Sprint(raw))
+		if v != "" {
+			return v
+		}
+	}
+	return ""
 }
 
 func (s *Service) failureWait() time.Duration {

@@ -10,17 +10,33 @@ import (
 )
 
 type Config struct {
-	Node   NodeConfig    `mapstructure:"node"`
-	API    APIConfig     `mapstructure:"api"`
-	Sync   SyncConfig    `mapstructure:"sync"`
-	RT     RuntimeConfig `mapstructure:"runtime"`
-	Update UpdateConfig  `mapstructure:"update"`
-	Log    LogConfig     `mapstructure:"log"`
+	Node     NodeConfig     `mapstructure:"node"`
+	API      APIConfig      `mapstructure:"api"`
+	Sync     SyncConfig     `mapstructure:"sync"`
+	RT       RuntimeConfig  `mapstructure:"runtime"`
+	Security SecurityConfig `mapstructure:"security"`
+	Update   UpdateConfig   `mapstructure:"update"`
+	Log      LogConfig      `mapstructure:"log"`
+}
+
+type SecurityConfig struct {
+	AutoBlock AutoBlockConfig `mapstructure:"auto_block"`
+}
+
+type AutoBlockConfig struct {
+	Enabled         bool          `mapstructure:"enabled"`
+	Backend         string        `mapstructure:"backend"`
+	SyncInterval    time.Duration `mapstructure:"sync_interval"`
+	ProtectNodeIP   bool          `mapstructure:"protect_node_ip"`
+	StaticWhitelist []string      `mapstructure:"static_whitelist"`
 }
 
 type NodeConfig struct {
-	ID                      int  `mapstructure:"id"`
-	GetPortOffsetByNodeName bool `mapstructure:"get_port_offset_by_node_name"`
+	ID                      int    `mapstructure:"id"`
+	GetPortOffsetByNodeName bool   `mapstructure:"get_port_offset_by_node_name"`
+	EnableMUHostRule        bool   `mapstructure:"enable_mu_host_rule"`
+	MURegex                 string `mapstructure:"mu_regex"`
+	MUSuffix                string `mapstructure:"mu_suffix"`
 }
 
 type APIConfig struct {
@@ -45,8 +61,19 @@ type LogConfig struct {
 }
 
 type RuntimeConfig struct {
-	Driver           string `mapstructure:"driver"`
-	ReconcileWorkers int    `mapstructure:"reconcile_workers"`
+	Driver              string           `mapstructure:"driver"`
+	ReconcileWorkers    int              `mapstructure:"reconcile_workers"`
+	OnUnsupportedCipher string           `mapstructure:"on_unsupported_cipher"`
+	DialTimeout         time.Duration    `mapstructure:"dial_timeout"`
+	DNSPreferIPv4       bool             `mapstructure:"dns_prefer_ipv4"`
+	DNSResolver         string           `mapstructure:"dns_resolver"`
+	SwitchRule          SwitchRuleConfig `mapstructure:"switchrule"`
+}
+
+type SwitchRuleConfig struct {
+	Enabled bool   `mapstructure:"enabled"`
+	Mode    string `mapstructure:"mode"`
+	Expr    string `mapstructure:"expr"`
 }
 
 type UpdateConfig struct {
@@ -111,6 +138,27 @@ func (c Config) Validate() error {
 	if c.RT.ReconcileWorkers <= 0 {
 		return fmt.Errorf("runtime.reconcile_workers must be > 0")
 	}
+	switch strings.ToLower(strings.TrimSpace(c.RT.OnUnsupportedCipher)) {
+	case "", "skip", "fail":
+	default:
+		return fmt.Errorf("runtime.on_unsupported_cipher must be skip or fail")
+	}
+	if c.RT.DialTimeout <= 0 {
+		return fmt.Errorf("runtime.dial_timeout must be > 0")
+	}
+	switch strings.ToLower(strings.TrimSpace(c.RT.SwitchRule.Mode)) {
+	case "", "none", "expr":
+	default:
+		return fmt.Errorf("runtime.switchrule.mode must be none or expr")
+	}
+	if strings.ToLower(strings.TrimSpace(c.RT.SwitchRule.Mode)) == "expr" && strings.TrimSpace(c.RT.SwitchRule.Expr) == "" {
+		return fmt.Errorf("runtime.switchrule.expr is required when runtime.switchrule.mode=expr")
+	}
+	if c.Security.AutoBlock.Enabled {
+		if c.Security.AutoBlock.SyncInterval <= 0 {
+			return fmt.Errorf("security.auto_block.sync_interval must be > 0")
+		}
+	}
 	if c.Update.Enabled {
 		if strings.TrimSpace(c.Update.Repository) == "" {
 			return fmt.Errorf("update.repository is required when update.enabled=true")
@@ -143,6 +191,9 @@ func Fields(c Config) []zap.Field {
 func setDefaults(v *viper.Viper) {
 	v.SetDefault("node.id", 119)
 	v.SetDefault("node.get_port_offset_by_node_name", true)
+	v.SetDefault("node.enable_mu_host_rule", true)
+	v.SetDefault("node.mu_regex", "%5m%id.%suffix")
+	v.SetDefault("node.mu_suffix", "example.com")
 
 	v.SetDefault("api.interface", "modwebapi")
 	v.SetDefault("api.url", "https://118.128.151.30")
@@ -158,6 +209,19 @@ func setDefaults(v *viper.Viper) {
 
 	v.SetDefault("runtime.driver", "mock")
 	v.SetDefault("runtime.reconcile_workers", 8)
+	v.SetDefault("runtime.on_unsupported_cipher", "skip")
+	v.SetDefault("runtime.dial_timeout", "8s")
+	v.SetDefault("runtime.dns_prefer_ipv4", false)
+	v.SetDefault("runtime.dns_resolver", "")
+	v.SetDefault("runtime.switchrule.enabled", false)
+	v.SetDefault("runtime.switchrule.mode", "none")
+	v.SetDefault("runtime.switchrule.expr", "")
+
+	v.SetDefault("security.auto_block.enabled", false)
+	v.SetDefault("security.auto_block.backend", "noop")
+	v.SetDefault("security.auto_block.sync_interval", "60s")
+	v.SetDefault("security.auto_block.protect_node_ip", true)
+	v.SetDefault("security.auto_block.static_whitelist", []string{"127.0.0.1", "::1"})
 
 	v.SetDefault("update.enabled", false)
 	v.SetDefault("update.repository", "jashok5/shadowsocks-go")

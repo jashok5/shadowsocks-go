@@ -3,28 +3,28 @@ set -euo pipefail
 
 GITHUB_REPO="jashok5/shadowsocks-go"
 GITHUB_API="https://api.github.com/repos/${GITHUB_REPO}"
-RAW_BASE_URL="https://raw.githubusercontent.com/${GITHUB_REPO}/main"
+
 INSTALL_DIR="/opt/shadowsocks-node"
 SERVICE_NAME="shadowsocks-node"
-BIN_PATH="$INSTALL_DIR/node"
-CFG_PATH="$INSTALL_DIR/config.yaml"
-SERVICE_FILE="/etc/systemd/system/${SERVICE_NAME}.service"
+RELEASE_TAG="latest"
+CFG_PATH=""
 
 usage() {
   cat <<EOF
 用法:
-  sudo ./deploy_linux.sh [--node-id <id>] [--api-url <url>] [--api-token <token>] [--version <tag>]
+  sudo ./update_linux.sh [--version <tag>] [--install-dir <path>] [--service-name <name>] [--config <path>]
 
 参数:
-  --node-id   节点 ID（数字）
-  --api-url   API 地址（例如 https://example.com）
-  --api-token API Token
-  --version   指定发布版本标签（例如 v1.2.3，默认 latest）
-  -h, --help  显示帮助
+  --version       指定发布版本标签（例如 v1.2.3，默认 latest）
+  --install-dir   安装目录（默认 /opt/shadowsocks-node）
+  --service-name  systemd 服务名（默认 shadowsocks-node）
+  --config        配置文件路径（默认 <install-dir>/config.yaml）
+  -h, --help      显示帮助
 
 说明:
-  - 如果未传 --node-id、--api-url 或 --api-token，会进入交互输入模式
-  - 传参和交互可混用，缺哪个补哪个
+  - 自动按发布版本 config.example.yaml 合并现有配置
+  - 旧配置项覆盖新模板同名项；新模板新增项保留默认值
+  - 更新完成后自动重启 systemd 服务
 EOF
 }
 
@@ -32,6 +32,52 @@ if [[ "${EUID}" -ne 0 ]]; then
   echo "请使用 root 运行本脚本"
   exit 1
 fi
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --version)
+      if [[ $# -lt 2 ]]; then
+        echo "--version 缺少参数"
+        exit 1
+      fi
+      RELEASE_TAG="$2"
+      shift 2
+      ;;
+    --install-dir)
+      if [[ $# -lt 2 ]]; then
+        echo "--install-dir 缺少参数"
+        exit 1
+      fi
+      INSTALL_DIR="$2"
+      shift 2
+      ;;
+    --service-name)
+      if [[ $# -lt 2 ]]; then
+        echo "--service-name 缺少参数"
+        exit 1
+      fi
+      SERVICE_NAME="$2"
+      shift 2
+      ;;
+    --config)
+      if [[ $# -lt 2 ]]; then
+        echo "--config 缺少参数"
+        exit 1
+      fi
+      CFG_PATH="$2"
+      shift 2
+      ;;
+    -h|--help)
+      usage
+      exit 0
+      ;;
+    *)
+      echo "未知参数: $1"
+      usage
+      exit 1
+      ;;
+  esac
+done
 
 if command -v curl >/dev/null 2>&1; then
   FETCH_CMD="curl -fsSL"
@@ -57,79 +103,35 @@ else
   JQ_BIN=""
 fi
 
-NODE_ID="${NODE_ID:-}"
-API_URL="${API_URL:-}"
-API_TOKEN="${API_TOKEN:-}"
-RELEASE_TAG="${RELEASE_TAG:-latest}"
-
-while [[ $# -gt 0 ]]; do
-  case "$1" in
-    --node-id)
-      if [[ $# -lt 2 ]]; then
-        echo "--node-id 缺少参数"
-        exit 1
-      fi
-      NODE_ID="$2"
-      shift 2
-      ;;
-    --api-url)
-      if [[ $# -lt 2 ]]; then
-        echo "--api-url 缺少参数"
-        exit 1
-      fi
-      API_URL="$2"
-      shift 2
-      ;;
-    --api-token)
-      if [[ $# -lt 2 ]]; then
-        echo "--api-token 缺少参数"
-        exit 1
-      fi
-      API_TOKEN="$2"
-      shift 2
-      ;;
-    --version)
-      if [[ $# -lt 2 ]]; then
-        echo "--version 缺少参数"
-        exit 1
-      fi
-      RELEASE_TAG="$2"
-      shift 2
-      ;;
-    -h|--help)
-      usage
-      exit 0
-      ;;
-    *)
-      echo "未知参数: $1"
-      usage
-      exit 1
-      ;;
-  esac
-done
-
-if [[ -z "${NODE_ID}" ]]; then
-  read -r -p "请输入 Node ID: " NODE_ID
-fi
-if [[ -z "${NODE_ID}" || ! "${NODE_ID}" =~ ^[0-9]+$ ]]; then
-  echo "Node ID 必须是数字"
+if command -v yq >/dev/null 2>&1; then
+  YQ_BIN="yq"
+else
+  echo "未找到 yq，无法自动合并配置文件，请先安装 yq v4+"
   exit 1
 fi
 
-if [[ -z "${API_URL}" ]]; then
-  read -r -p "请输入 API URL (例如 https://example.com): " API_URL
+BIN_PATH="${INSTALL_DIR}/node"
+if [[ -z "$CFG_PATH" ]]; then
+  CFG_PATH="${INSTALL_DIR}/config.yaml"
 fi
-if [[ -z "${API_URL}" ]]; then
-  echo "API URL 不能为空"
+
+if [[ ! -d "$INSTALL_DIR" ]]; then
+  echo "安装目录不存在: $INSTALL_DIR"
   exit 1
 fi
 
-if [[ -z "${API_TOKEN}" ]]; then
-  read -r -s -p "请输入 API Token: " API_TOKEN
-  echo
+if [[ ! -x "$BIN_PATH" ]]; then
+  echo "未找到可执行文件: $BIN_PATH"
+  exit 1
 fi
-if [[ -z "${API_TOKEN}" ]]; then
-  echo "API Token 不能为空"
+
+if [[ ! -f "$CFG_PATH" ]]; then
+  echo "未找到配置文件: $CFG_PATH"
+  exit 1
+fi
+
+if ! systemctl status "$SERVICE_NAME" >/dev/null 2>&1; then
+  echo "未找到 systemd 服务: $SERVICE_NAME"
   exit 1
 fi
 
@@ -206,11 +208,17 @@ verify_binary_checksum() {
   fi
 }
 
-mkdir -p "$INSTALL_DIR"
+merge_config() {
+  local new_example="$1"
+  local old_config="$2"
+  local merged_output="$3"
+
+  "$YQ_BIN" eval-all 'select(fileIndex == 0) * select(fileIndex == 1)' "$new_example" "$old_config" > "$merged_output"
+}
 
 resolve_release
 
-echo "发布版本: $RELEASE_VERSION"
+echo "目标版本: $RELEASE_VERSION"
 echo "目标架构: linux/$GOARCH"
 
 tmp_dir="$(mktemp -d)"
@@ -222,69 +230,34 @@ download_text "$BINARY_URL" > "$tmp_dir/$ASSET_NAME"
 echo "下载 checksums.txt..."
 download_text "$CHECKSUM_URL" > "$tmp_dir/checksums.txt"
 
+echo "下载 config.example.yaml..."
+download_text "https://raw.githubusercontent.com/${GITHUB_REPO}/${RELEASE_VERSION}/configs/config.example.yaml" > "$tmp_dir/config.example.yaml"
+
 echo "校验 node 程序..."
 verify_binary_checksum "$tmp_dir/$ASSET_NAME" "$tmp_dir/checksums.txt"
+
+echo "合并配置文件..."
+merge_config "$tmp_dir/config.example.yaml" "$CFG_PATH" "$tmp_dir/config.merged.yaml"
+
+backup_path="${BIN_PATH}.bak.$(date +%Y%m%d%H%M%S)"
+cp -f "$BIN_PATH" "$backup_path"
+
+config_backup_path="${CFG_PATH}.bak.$(date +%Y%m%d%H%M%S)"
+cp -f "$CFG_PATH" "$config_backup_path"
 
 install -m 0755 "$tmp_dir/$ASSET_NAME" "$BIN_PATH"
 chmod +x "$BIN_PATH"
 
-echo "下载 config.example.yaml..."
-download_text "$RAW_BASE_URL/configs/config.example.yaml" > "$CFG_PATH"
+install -m 0644 "$tmp_dir/config.merged.yaml" "${CFG_PATH}.tmp"
+mv -f "${CFG_PATH}.tmp" "$CFG_PATH"
 
-tmp_file="$(mktemp)"
-awk -v node_id="$NODE_ID" -v api_url="$API_URL" -v api_token="$API_TOKEN" '
-BEGIN { section = "" }
-/^[[:space:]]*node:[[:space:]]*$/ { section = "node"; print; next }
-/^[[:space:]]*api:[[:space:]]*$/ { section = "api"; print; next }
-/^[[:space:]]*[a-zA-Z0-9_]+:[[:space:]]*$/ {
-  if ($0 !~ /^[[:space:]]*node:[[:space:]]*$/ && $0 !~ /^[[:space:]]*api:[[:space:]]*$/) {
-    section = ""
-  }
-}
-section == "node" && /^[[:space:]]*id:[[:space:]]*/ {
-  print "  id: " node_id
-  next
-}
-section == "api" && /^[[:space:]]*url:[[:space:]]*/ {
-  print "  url: " api_url
-  next
-}
-section == "api" && /^[[:space:]]*token:[[:space:]]*/ {
-  print "  token: " api_token
-  next
-}
-{ print }
-' "$CFG_PATH" > "$tmp_file"
-mv "$tmp_file" "$CFG_PATH"
-
-cat > "$SERVICE_FILE" <<EOF
-[Unit]
-Description=EasySSR Go Node Service
-After=network-online.target
-Wants=network-online.target
-
-[Service]
-Type=simple
-User=root
-Group=root
-WorkingDirectory=$INSTALL_DIR
-ExecStart=$BIN_PATH --config $CFG_PATH --log-level info --log-format json
-Restart=always
-RestartSec=3
-LimitNOFILE=1048576
-KillSignal=SIGTERM
-TimeoutStopSec=20
-
-[Install]
-WantedBy=multi-user.target
-EOF
-
-systemctl daemon-reload
-systemctl enable "$SERVICE_NAME"
+echo "重启服务: $SERVICE_NAME"
 systemctl restart "$SERVICE_NAME"
 
 echo
-echo "部署完成"
-echo "配置文件: $CFG_PATH"
+echo "更新完成"
+echo "备份文件: $backup_path"
+echo "配置备份: $config_backup_path"
+echo "当前版本: $($BIN_PATH --version)"
 echo "服务状态: systemctl status $SERVICE_NAME"
 echo "实时日志: journalctl -u $SERVICE_NAME -f"

@@ -16,6 +16,7 @@ type MockDriver struct {
 	userOnlineIP map[int][]string
 	detect       map[int][]int
 	userDetect   map[int][]int
+	wrongIP      []string
 	starts       int
 	reloads      int
 	stops        int
@@ -101,7 +102,9 @@ func (d *MockDriver) Snapshot(_ context.Context) (DriverSnapshot, error) {
 		copy(cp, v)
 		userDetect[k] = cp
 	}
-	return DriverSnapshot{Transfer: transfer, UserTransfer: userTransfer, OnlineIP: onlineIP, UserOnlineIP: userOnlineIP, Detect: detect, UserDetect: userDetect}, nil
+	wrongIP := make([]string, len(d.wrongIP))
+	copy(wrongIP, d.wrongIP)
+	return DriverSnapshot{Transfer: transfer, UserTransfer: userTransfer, OnlineIP: onlineIP, UserOnlineIP: userOnlineIP, Detect: detect, UserDetect: userDetect, WrongIP: wrongIP}, nil
 }
 
 func (d *MockDriver) Close(_ context.Context) error {
@@ -165,4 +168,11 @@ func (d *MockDriver) Stats() (starts, reloads, stops int) {
 	d.mu.RLock()
 	defer d.mu.RUnlock()
 	return d.starts, d.reloads, d.stops
+}
+
+func (d *MockDriver) HasPort(port int) bool {
+	d.mu.RLock()
+	defer d.mu.RUnlock()
+	_, ok := d.configs[port]
+	return ok
 }

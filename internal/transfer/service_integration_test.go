@@ -35,9 +35,11 @@ func TestSyncOnceWithMockAPI(t *testing.T) {
 		case r.Method == http.MethodGet && uri == "func/ping":
 			writeJSON(w, map[string]any{"ret": 1, "data": "pong"})
 		case r.Method == http.MethodGet && uri == "nodes/5/info":
-			writeJSON(w, map[string]any{"ret": 1, "data": map[string]any{"node_speedlimit": 0.0, "traffic_rate": 1.0, "mu_only": 0, "port_offset": 0}})
+			writeJSON(w, map[string]any{"ret": 1, "data": map[string]any{"node_speedlimit": 0.0, "traffic_rate": 1.0, "mu_only": 1, "port_offset": 0}})
+		case r.Method == http.MethodGet && uri == "nodes":
+			writeJSON(w, map[string]any{"ret": 1, "data": []map[string]any{{"id": 5, "name": "HK #1200", "node_ip": "10.0.0.1"}}})
 		case r.Method == http.MethodGet && uri == "users":
-			writeJSON(w, map[string]any{"ret": 1, "data": []map[string]any{{"id": 1001, "port": 9001, "passwd": "p1", "method": "aes-256-gcm", "protocol": "origin", "obfs": "plain", "is_multi_user": 0}}})
+			writeJSON(w, map[string]any{"ret": 1, "data": []map[string]any{{"id": 1001, "port": 9001, "passwd": "p1", "method": "aes-256-gcm", "protocol": "origin", "obfs": "plain", "is_multi_user": 1}}})
 		case r.Method == http.MethodGet && uri == "func/detect_rules":
 			writeJSON(w, map[string]any{"ret": 1, "data": []any{}})
 		case r.Method == http.MethodPost && uri == "users/traffic":
@@ -61,7 +63,7 @@ func TestSyncOnceWithMockAPI(t *testing.T) {
 	defer server.Close()
 
 	cfg := config.Config{
-		Node: config.NodeConfig{ID: 5},
+		Node: config.NodeConfig{ID: 5, GetPortOffsetByNodeName: true},
 		API: config.APIConfig{
 			URL:             server.URL,
 			Token:           "test-token",
@@ -81,7 +83,7 @@ func TestSyncOnceWithMockAPI(t *testing.T) {
 	client := api.NewClient(&http.Client{Timeout: time.Second}, cfg.API)
 	log := zap.NewNop()
 	drv := runtime.NewMockDriver()
-	drv.InjectTransfer(9001, model.PortTransfer{Upload: 123, Download: 456})
+	drv.InjectUserTransfer(1001, model.PortTransfer{Upload: 123, Download: 456})
 	rt := runtime.NewMemoryManagerWithDriver(log, drv, 1)
 	svc := NewService(cfg, "", log, client, rt, nil, "v0.0.0")
 
@@ -99,6 +101,10 @@ func TestSyncOnceWithMockAPI(t *testing.T) {
 	}
 	if trafficPosted[0].UserID != 1001 || trafficPosted[0].U != 123 || trafficPosted[0].D != 456 {
 		t.Fatalf("unexpected traffic payload: %+v", trafficPosted[0])
+	}
+
+	if !drv.HasPort(10201) {
+		t.Fatalf("expected effective port with name offset 10201")
 	}
 }
 

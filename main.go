@@ -50,7 +50,7 @@ func main() {
 
 	var up *updater.Updater
 	if cfg.Update.Enabled {
-		up, err = updater.New(cfg.Update, log)
+		up, err = updater.New(cfg.Update, log, configPath)
 		if err != nil {
 			log.Fatal("init updater failed", logger.Err(err))
 		}
