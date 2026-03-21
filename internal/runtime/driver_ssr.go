@@ -92,7 +92,7 @@ func (d *SSRDriver) Start(_ context.Context, cfg PortConfig) error {
 		Protocol:      cfg.Protocol,
 		ProtocolParam: cfg.ProtocolParam,
 		Obfs:          cfg.Obfs,
-		ObfsParam:     cfg.ObfsParam,
+		ObfsParam:     buildMultiUserObfsParam(cfg),
 		Single:        boolToSingle(cfg.IsMultiUser),
 		Users:         convertUsers(cfg.Users),
 		ShadowsocksRArgs: &vnetServer.ShadowsocksRArgs{
@@ -105,7 +105,7 @@ func (d *SSRDriver) Start(_ context.Context, cfg PortConfig) error {
 		OnlineReport: onlineReporter(func(uid int, ip string) {
 			d.addOnlineIP(cfg.Port, uid, ip)
 		}),
-		HostFirewall: newHostFirewall(cfg.ForbiddenIP, cfg.ForbiddenPort, cfg.MUHosts, cfg.Detect, func(ruleID int) {
+		HostFirewall: newHostFirewall(cfg.ForbiddenIP, cfg.ForbiddenPort, cfg.Detect, func(ruleID int) {
 			d.markDetect(cfg.Port, ruleID)
 		}),
 	}
@@ -346,21 +346,12 @@ func (r onlineReporter) Online(uid int, ip string) { r(uid, ip) }
 type hostFirewall struct {
 	forbiddenIP   string
 	forbiddenPort string
-	muHosts       map[string]struct{}
 	detect        DetectBuckets
 	onRuleHit     func(int)
 }
 
-func newHostFirewall(ip, port string, muHosts []string, detect DetectBuckets, onRuleHit func(int)) *hostFirewall {
-	hostMap := make(map[string]struct{}, len(muHosts))
-	for _, h := range muHosts {
-		h = normalizeHostOnly(h)
-		if h == "" {
-			continue
-		}
-		hostMap[h] = struct{}{}
-	}
-	return &hostFirewall{forbiddenIP: ip, forbiddenPort: port, muHosts: hostMap, detect: detect, onRuleHit: onRuleHit}
+func newHostFirewall(ip, port string, detect DetectBuckets, onRuleHit func(int)) *hostFirewall {
+	return &hostFirewall{forbiddenIP: ip, forbiddenPort: port, detect: detect, onRuleHit: onRuleHit}
 }
 
 func (h *hostFirewall) JudgeHostWithReport(ipOrDomain string, uid int) bool {
@@ -377,15 +368,6 @@ func (h *hostFirewall) JudgeHostWithReport(ipOrDomain string, uid int) bool {
 	}
 	if port > 0 && blockedPort(port, h.forbiddenPort) {
 		return false
-	}
-	if len(h.muHosts) > 0 {
-		hostOnly := normalizeHostOnly(host)
-		if hostOnly == "" {
-			return false
-		}
-		if _, ok := h.muHosts[hostOnly]; !ok {
-			return false
-		}
 	}
 	blockedByDetect := false
 	walkMatchedRules(ipOrDomain, h.detect, func(ruleID int) bool {
@@ -416,6 +398,40 @@ func boolToSingle(isMultiUser bool) int {
 		return 1
 	}
 	return 0
+}
+
+func buildMultiUserObfsParam(cfg PortConfig) string {
+	base := strings.TrimSpace(cfg.ObfsParam)
+	if !cfg.IsMultiUser || len(cfg.MUHosts) == 0 {
+		return base
+	}
+	items := make([]string, 0, 1+len(cfg.MUHosts))
+	seen := make(map[string]struct{}, 1+len(cfg.MUHosts))
+	if base != "" {
+		for _, part := range strings.Split(base, ",") {
+			v := strings.TrimSpace(part)
+			if v == "" {
+				continue
+			}
+			if _, ok := seen[v]; ok {
+				continue
+			}
+			seen[v] = struct{}{}
+			items = append(items, v)
+		}
+	}
+	for _, host := range cfg.MUHosts {
+		host = strings.TrimSpace(host)
+		if host == "" {
+			continue
+		}
+		if _, ok := seen[host]; ok {
+			continue
+		}
+		seen[host] = struct{}{}
+		items = append(items, host)
+	}
+	return strings.Join(items, ",")
 }
 
 func canHotReloadSSR(oldCfg, newCfg PortConfig) bool {

@@ -36,11 +36,24 @@ func TestCanHotReloadSSR(t *testing.T) {
 }
 
 func TestHostFirewallMUHosts(t *testing.T) {
-	h := newHostFirewall("", "", []string{"abc.example.com", "def.example.com"}, DetectBuckets{}, nil)
+	h := newHostFirewall("", "", DetectBuckets{}, nil)
 	if !h.JudgeHostWithReport("abc.example.com:443", 10) {
 		t.Fatalf("expected allowed host")
 	}
-	if h.JudgeHostWithReport("zzz.example.com:443", 10) {
-		t.Fatalf("expected rejected host")
+	if !h.JudgeHostWithReport("zzz.example.com:443", 10) {
+		t.Fatalf("expected allowed host without forbidden rules")
+	}
+}
+
+func TestBuildMultiUserObfsParam(t *testing.T) {
+	cfg := PortConfig{
+		IsMultiUser: true,
+		ObfsParam:   "cdn.example.com",
+		MUHosts:     []string{"a.example.com", "b.example.com", "a.example.com"},
+	}
+	got := buildMultiUserObfsParam(cfg)
+	want := "cdn.example.com,a.example.com,b.example.com"
+	if got != want {
+		t.Fatalf("unexpected obfs_param, want=%q got=%q", want, got)
 	}
 }

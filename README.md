@@ -176,11 +176,6 @@ curl -fsSL https://raw.githubusercontent.com/jashok5/shadowsocks-go/main/scripts
 - `--api-token`：后端 API Token（必填，可交互输入，输入时不回显）
 - `--version`：指定发布标签（可选，默认 `latest`）
 
-常用依赖安装（缺少 `jq` 时）：
-
-- Debian/Ubuntu：`sudo apt-get update && sudo apt-get install -y jq`
-- RHEL/CentOS/Rocky/AlmaLinux：`sudo dnf install -y jq`（旧版系统可用 `sudo yum install -y jq`）
-
 ### 2.2 Linux 手动升级（保留旧配置并合并新字段）
 
 升级脚本：
@@ -198,6 +193,8 @@ curl -fsSL https://raw.githubusercontent.com/jashok5/shadowsocks-go/main/scripts
 依赖：
 
 - `yq`（v4+，用于 YAML 深度合并）
+- Debian/Ubuntu：`sudo apt-get update && sudo apt-get install -y yq`
+- RHEL/CentOS/Rocky/AlmaLinux：`sudo dnf install -y yq`（旧版系统可用 `sudo yum install -y yq`）
 
 示例（升级到 latest）：
 
