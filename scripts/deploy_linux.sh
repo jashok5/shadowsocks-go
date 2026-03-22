@@ -236,7 +236,7 @@ awk -v node_id="$NODE_ID" -v api_url="$API_URL" -v api_token="$API_TOKEN" '
 BEGIN { section = "" }
 /^[[:space:]]*node:[[:space:]]*$/ { section = "node"; print; next }
 /^[[:space:]]*api:[[:space:]]*$/ { section = "api"; print; next }
-/^[[:space:]]*[a-zA-Z0-9_]+:[[:space:]]*$/ {
+/^[a-zA-Z0-9_]+:[[:space:]]*$/ {
   if ($0 !~ /^[[:space:]]*node:[[:space:]]*$/ && $0 !~ /^[[:space:]]*api:[[:space:]]*$/) {
     section = ""
   }

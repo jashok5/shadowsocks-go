@@ -121,6 +121,11 @@ log:
 - `sync.update_interval`：同步周期
 - `sync.failure_base_wait`：同步失败后的基础退避
 - `sync.failure_max_wait`：同步失败退避上限
+- `update.enabled`：是否启用自动检查更新
+- `update.repository`：GitHub 仓库（格式 `owner/repo`，例如 `jashok5/shadowsocks-go`）
+- `update.check_interval`：自动检查新版本的周期
+- `update.timeout`：更新检查/下载请求超时
+- `update.allow_prerelease`：是否允许预发布版本参与更新
 - `runtime.driver`：运行时驱动，`mock`、`ss` 或 `ssr`
 - `runtime.reconcile_workers`：端口收敛并发 worker 数
 - `runtime.on_unsupported_cipher`：不支持加密算法时策略，`skip`（跳过用户）或 `fail`（当前同步失败）
