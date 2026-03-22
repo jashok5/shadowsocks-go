@@ -239,10 +239,10 @@ verify_binary_checksum "$tmp_dir/$ASSET_NAME" "$tmp_dir/checksums.txt"
 echo "合并配置文件..."
 merge_config "$tmp_dir/config.example.yaml" "$CFG_PATH" "$tmp_dir/config.merged.yaml"
 
-backup_path="${BIN_PATH}.bak.$(date +%Y%m%d%H%M%S)"
+backup_path="${BIN_PATH}.bak"
 cp -f "$BIN_PATH" "$backup_path"
 
-config_backup_path="${CFG_PATH}.bak.$(date +%Y%m%d%H%M%S)"
+config_backup_path="${CFG_PATH}.bak"
 cp -f "$CFG_PATH" "$config_backup_path"
 
 install -m 0755 "$tmp_dir/$ASSET_NAME" "$BIN_PATH"
