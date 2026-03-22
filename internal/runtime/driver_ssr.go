@@ -162,7 +162,10 @@ func (d *SSRDriver) Reload(ctx context.Context, cfg PortConfig) error {
 	return d.Start(ctx, cfg)
 }
 
-func (d *SSRDriver) Stop(_ context.Context, port int) error {
+func (d *SSRDriver) Stop(ctx context.Context, port int) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	d.mu.Lock()
 	inst, ok := d.servers[port]
 	if ok {
@@ -182,7 +185,17 @@ func (d *SSRDriver) Stop(_ context.Context, port int) error {
 	if inst.udp != nil {
 		_ = inst.udp.Close()
 	}
-	inst.wg.Wait()
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		inst.wg.Wait()
+	}()
+	select {
+	case <-done:
+	case <-ctx.Done():
+		d.log.Warn("ssr driver stop timeout", zap.Int("port", port), zap.Error(ctx.Err()))
+		return ctx.Err()
+	}
 	d.log.Info("ssr driver stop", zap.Int("port", port))
 	return nil
 }

@@ -71,7 +71,8 @@ func main() {
 		log.Fatal("node service stopped with error", logger.Err(err))
 	}
 	if errors.Is(err, transfer.ErrRestartRequired) {
-		log.Info("node service exit for restart after auto update")
+		log.Info("node service fast exit for restart after auto update")
+		return
 	}
 
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)

@@ -96,7 +96,10 @@ func (d *SSDriver) Reload(ctx context.Context, cfg PortConfig) error {
 	return d.Start(ctx, cfg)
 }
 
-func (d *SSDriver) Stop(_ context.Context, port int) error {
+func (d *SSDriver) Stop(ctx context.Context, port int) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	d.mu.Lock()
 	rt, ok := d.ports[port]
 	if ok {
@@ -113,7 +116,17 @@ func (d *SSDriver) Stop(_ context.Context, port int) error {
 	if rt.udpConn != nil {
 		_ = rt.udpConn.Close()
 	}
-	rt.wg.Wait()
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		rt.wg.Wait()
+	}()
+	select {
+	case <-done:
+	case <-ctx.Done():
+		d.log.Warn("ss driver stop timeout", zap.Int("port", port), zap.Error(ctx.Err()))
+		return ctx.Err()
+	}
 	d.log.Info("ss driver stop", zap.Int("port", port))
 	return nil
 }
