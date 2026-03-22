@@ -25,6 +25,12 @@ import (
 	"golang.org/x/time/rate"
 )
 
+const (
+	ssrHandshakeTimeout = 10 * time.Second
+	ssrRelayIOTimeout   = 120 * time.Second
+	ssrStopTimeout      = 15 * time.Second
+)
+
 type SSRDriver struct {
 	log *zap.Logger
 
@@ -52,6 +58,8 @@ type ssrInstance struct {
 	ctx       context.Context
 	cancel    context.CancelFunc
 	wg        sync.WaitGroup
+	connMu    sync.Mutex
+	activeTCP map[net.Conn]struct{}
 }
 
 func NewSSRDriver(log *zap.Logger) *SSRDriver {
@@ -111,7 +119,7 @@ func (d *SSRDriver) Start(_ context.Context, cfg PortConfig) error {
 	}
 
 	instCtx, cancel := context.WithCancel(context.Background())
-	inst := &ssrInstance{port: cfg.Port, proxy: proxy, cfg: cfg, detect: make(map[int]struct{}), limitUp: make(map[int]*rate.Limiter), limitDown: make(map[int]*rate.Limiter), ctx: instCtx, cancel: cancel}
+	inst := &ssrInstance{port: cfg.Port, proxy: proxy, cfg: cfg, detect: make(map[int]struct{}), limitUp: make(map[int]*rate.Limiter), limitDown: make(map[int]*rate.Limiter), ctx: instCtx, cancel: cancel, activeTCP: make(map[net.Conn]struct{})}
 	for uid, speed := range cfg.UserSpeed {
 		inst.limitUp[uid] = newRateLimiter(speed)
 		inst.limitDown[uid] = newRateLimiter(speed)
@@ -166,6 +174,11 @@ func (d *SSRDriver) Stop(ctx context.Context, port int) error {
 	if ctx == nil {
 		ctx = context.Background()
 	}
+	if _, ok := ctx.Deadline(); !ok {
+		stopCtx, cancel := context.WithTimeout(ctx, ssrStopTimeout)
+		defer cancel()
+		ctx = stopCtx
+	}
 	d.mu.Lock()
 	inst, ok := d.servers[port]
 	if ok {
@@ -175,6 +188,7 @@ func (d *SSRDriver) Stop(ctx context.Context, port int) error {
 	if !ok {
 		return nil
 	}
+	inst.closeActiveTCP()
 	if inst.proxy != nil && inst.proxy.Listener != nil {
 		_ = inst.proxy.Listener.Close()
 	}
@@ -198,6 +212,36 @@ func (d *SSRDriver) Stop(ctx context.Context, port int) error {
 	}
 	d.log.Info("ssr driver stop", zap.Int("port", port))
 	return nil
+}
+
+func (inst *ssrInstance) addActiveTCP(conn net.Conn) {
+	if conn == nil {
+		return
+	}
+	inst.connMu.Lock()
+	inst.activeTCP[conn] = struct{}{}
+	inst.connMu.Unlock()
+}
+
+func (inst *ssrInstance) removeActiveTCP(conn net.Conn) {
+	if conn == nil {
+		return
+	}
+	inst.connMu.Lock()
+	delete(inst.activeTCP, conn)
+	inst.connMu.Unlock()
+}
+
+func (inst *ssrInstance) closeActiveTCP() {
+	inst.connMu.Lock()
+	conns := make([]net.Conn, 0, len(inst.activeTCP))
+	for c := range inst.activeTCP {
+		conns = append(conns, c)
+	}
+	inst.connMu.Unlock()
+	for _, c := range conns {
+		_ = c.Close()
+	}
 }
 
 func (d *SSRDriver) Snapshot(_ context.Context) (DriverSnapshot, error) {
@@ -535,6 +579,8 @@ func (d *SSRDriver) serveSSRTCP(inst *ssrInstance) {
 		inst.wg.Add(1)
 		go func(c net.Conn) {
 			defer inst.wg.Done()
+			inst.addActiveTCP(c)
+			defer inst.removeActiveTCP(c)
 			defer c.Close()
 
 			request := vnetNetwork.NewRequestWithTCP(c)
@@ -554,7 +600,9 @@ func (d *SSRDriver) serveSSRTCP(inst *ssrInstance) {
 			}
 			ssrd.TrafficReport = inst.proxy.TrafficReport
 
+			_ = c.SetReadDeadline(time.Now().Add(ssrHandshakeTimeout))
 			addr, err := socksproxy.ReadAddr(ssrd)
+			_ = c.SetReadDeadline(time.Time{})
 			if err != nil {
 				if errors.Is(err, io.EOF) {
 					return
@@ -610,12 +658,27 @@ func relayQuietLimited(ctx context.Context, left net.Conn, right net.Conn, upLim
 func relayOneWayLimited(ctx context.Context, src net.Conn, dst net.Conn, limiter *rate.Limiter) {
 	buf := make([]byte, 32*1024)
 	for {
+		if err := src.SetReadDeadline(time.Now().Add(ssrRelayIOTimeout)); err != nil {
+			return
+		}
 		n, err := src.Read(buf)
 		if n > 0 {
 			_ = waitLimiter(ctx, limiter, n)
+			_ = dst.SetWriteDeadline(time.Now().Add(ssrRelayIOTimeout))
 			_, _ = dst.Write(buf[:n])
 		}
 		if err != nil {
+			if ne, ok := err.(net.Error); ok && ne.Timeout() {
+				select {
+				case <-ctx.Done():
+					if c, ok := dst.(*net.TCPConn); ok {
+						_ = c.CloseWrite()
+					}
+					return
+				default:
+					continue
+				}
+			}
 			if c, ok := dst.(*net.TCPConn); ok {
 				_ = c.CloseWrite()
 			}

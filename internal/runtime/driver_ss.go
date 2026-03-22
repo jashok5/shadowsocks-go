@@ -23,6 +23,7 @@ import (
 const (
 	udpBufSize           = 64 * 1024
 	dialTimeout          = 8 * time.Second
+	handshakeReadTimeout = 10 * time.Second
 	idleReadTimeout      = 30 * time.Second
 	maxTCPConnPerPort    = 1024
 	maxUDPPendingPerPort = 256
@@ -39,6 +40,8 @@ type ssPortRuntime struct {
 	udpConn     net.PacketConn
 	tcpSem      chan struct{}
 	udpSem      chan struct{}
+	connMu      sync.Mutex
+	activeConn  map[net.Conn]struct{}
 	limitUp     *rate.Limiter
 	limitDown   *rate.Limiter
 	firstDetect bool
@@ -116,6 +119,7 @@ func (d *SSDriver) Stop(ctx context.Context, port int) error {
 	if rt.udpConn != nil {
 		_ = rt.udpConn.Close()
 	}
+	rt.closeActiveConn()
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
@@ -241,6 +245,7 @@ func (d *SSDriver) startPortLocked(ctx context.Context, cfg PortConfig) (*ssPort
 		detect:      make(map[int]struct{}),
 		tcpSem:      make(chan struct{}, maxTCPConnPerPort),
 		udpSem:      make(chan struct{}, maxUDPPendingPerPort),
+		activeConn:  make(map[net.Conn]struct{}),
 		limitUp:     newRateLimiter(cfg.NodeSpeedLimit),
 		limitDown:   newRateLimiter(cfg.NodeSpeedLimit),
 		firstDetect: false,
@@ -289,6 +294,8 @@ func (d *SSDriver) serveTCP(rt *ssPortRuntime) {
 		}
 		rt.wg.Add(1)
 		go func(c net.Conn) {
+			rt.addActiveConn(c)
+			defer rt.removeActiveConn(c)
 			if !acquireToken(rt.ctx, rt.tcpSem) {
 				atomic.AddInt64(&rt.tcpDrop, 1)
 				_ = c.Close()
@@ -303,7 +310,9 @@ func (d *SSDriver) serveTCP(rt *ssPortRuntime) {
 				d.AddOnlineIP(port, addr.IP.String())
 			}
 
+			_ = c.SetReadDeadline(time.Now().Add(handshakeReadTimeout))
 			target, err := socks.ReadAddr(c)
+			_ = c.SetReadDeadline(time.Time{})
 			if err != nil {
 				d.log.Warn("read target failed", zap.Int("port", port), zap.Error(err))
 				return
@@ -454,6 +463,11 @@ func relayCounted(ctx context.Context, upLimit, downLimit *rate.Limiter, port in
 			}
 			if err != nil {
 				if ne, ok := err.(net.Error); ok && ne.Timeout() {
+					select {
+					case <-ctx.Done():
+						return
+					default:
+					}
 					continue
 				}
 				return
@@ -477,6 +491,11 @@ func relayCounted(ctx context.Context, upLimit, downLimit *rate.Limiter, port in
 					return
 				}
 				if ne, ok := err.(net.Error); ok && ne.Timeout() {
+					select {
+					case <-ctx.Done():
+						return
+					default:
+					}
 					continue
 				}
 				return
@@ -484,6 +503,36 @@ func relayCounted(ctx context.Context, upLimit, downLimit *rate.Limiter, port in
 		}
 	}()
 	wg.Wait()
+}
+
+func (rt *ssPortRuntime) addActiveConn(conn net.Conn) {
+	if conn == nil {
+		return
+	}
+	rt.connMu.Lock()
+	rt.activeConn[conn] = struct{}{}
+	rt.connMu.Unlock()
+}
+
+func (rt *ssPortRuntime) removeActiveConn(conn net.Conn) {
+	if conn == nil {
+		return
+	}
+	rt.connMu.Lock()
+	delete(rt.activeConn, conn)
+	rt.connMu.Unlock()
+}
+
+func (rt *ssPortRuntime) closeActiveConn() {
+	rt.connMu.Lock()
+	conns := make([]net.Conn, 0, len(rt.activeConn))
+	for c := range rt.activeConn {
+		conns = append(conns, c)
+	}
+	rt.connMu.Unlock()
+	for _, c := range conns {
+		_ = c.Close()
+	}
 }
 
 func (d *SSDriver) applyDetect(port int, payload []byte) {

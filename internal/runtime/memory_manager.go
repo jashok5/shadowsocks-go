@@ -9,10 +9,15 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/jashok5/shadowsocks-go/internal/model"
 
 	"go.uber.org/zap"
+)
+
+const (
+	reconcileOpTimeout = 20 * time.Second
 )
 
 type serverState struct {
@@ -180,16 +185,18 @@ func (m *MemoryManager) applyOps(ctx context.Context, ops []reconcileOp) error {
 			defer wg.Done()
 			for op := range jobs {
 				var err error
+				opCtx, cancel := context.WithTimeout(ctx, reconcileOpTimeout)
 				switch op.kind {
 				case opStart:
-					err = m.drv.Start(ctx, op.cfg)
+					err = m.drv.Start(opCtx, op.cfg)
 				case opReload:
-					err = m.drv.Reload(ctx, op.cfg)
+					err = m.drv.Reload(opCtx, op.cfg)
 				case opStop:
-					err = m.drv.Stop(ctx, op.port)
+					err = m.drv.Stop(opCtx, op.port)
 				default:
 					err = fmt.Errorf("unknown op kind: %s", op.kind)
 				}
+				cancel()
 				if err != nil {
 					select {
 					case errCh <- fmt.Errorf("%s port %d failed: %w", op.kind, op.port, err):
