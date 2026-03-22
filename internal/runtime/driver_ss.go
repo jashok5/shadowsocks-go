@@ -14,8 +14,8 @@ import (
 
 	"github.com/jashok5/shadowsocks-go/internal/model"
 
-	"github.com/shadowsocks/go-shadowsocks2/core"
-	"github.com/shadowsocks/go-shadowsocks2/socks"
+	"github.com/jashok5/shadowsocks-go/internal/protocol/ss/core"
+	"github.com/jashok5/shadowsocks-go/internal/protocol/ss/socks"
 	"go.uber.org/zap"
 	"golang.org/x/time/rate"
 )
@@ -137,21 +137,24 @@ func (d *SSDriver) Snapshot(_ context.Context) (DriverSnapshot, error) {
 		down := atomic.LoadInt64(&rt.download)
 		out.Transfer[port] = model.PortTransfer{Upload: up, Download: down}
 
-		rt.onlineMu.RLock()
+		rt.onlineMu.Lock()
 		ips := make([]string, 0, len(rt.onlineIP))
 		for ip := range rt.onlineIP {
 			ips = append(ips, ip)
 		}
-		rt.onlineMu.RUnlock()
+		rt.onlineIP = make(map[string]struct{})
+		rt.onlineMu.Unlock()
 		sort.Strings(ips)
 		out.OnlineIP[port] = ips
 
-		rt.detectMu.RLock()
+		rt.detectMu.Lock()
 		ruleIDs := make([]int, 0, len(rt.detect))
 		for id := range rt.detect {
 			ruleIDs = append(ruleIDs, id)
 		}
-		rt.detectMu.RUnlock()
+		rt.detect = make(map[int]struct{})
+		rt.firstDetect = false
+		rt.detectMu.Unlock()
 		sort.Ints(ruleIDs)
 		out.Detect[port] = ruleIDs
 	}

@@ -219,6 +219,9 @@ func (s *Service) syncOnce(ctx context.Context) error {
 	if err := s.pushTraffic(ctx, snap.Transfer, snap.UserTransfer, snap.PortUser); err != nil {
 		s.log.Warn("push users traffic failed", logger.Err(err))
 	}
+	if err := s.api.PostNodeInfo(ctx, s.uptimeText(), s.loadText()); err != nil {
+		s.log.Warn("push node info failed", logger.Err(err))
+	}
 	aliveData := snap.OnlineIP
 	if len(snap.UserOnlineIP) > 0 {
 		aliveData = snap.UserOnlineIP
@@ -233,13 +236,7 @@ func (s *Service) syncOnce(ctx context.Context) error {
 	if err := s.pushDetectLog(ctx, detectData); err != nil {
 		s.log.Warn("push detect log failed", logger.Err(err))
 	}
-	s.log.Debug("sync phase done", zap.String("phase", "push_user_data"), zap.Duration("cost", time.Since(phase)))
-
-	phase = time.Now()
-	if err := s.api.PostNodeInfo(ctx, s.uptimeText(), s.loadText()); err != nil {
-		s.log.Warn("push node info failed", logger.Err(err))
-	}
-	s.log.Debug("sync phase done", zap.String("phase", "push_node_info"), zap.Duration("cost", time.Since(phase)))
+	s.log.Debug("sync phase done", zap.String("phase", "push_remote"), zap.Duration("cost", time.Since(phase)))
 
 	if ds, ok := s.runtime.(*runtime.MemoryManager); ok {
 		if ss, ok := ds.Driver().(*runtime.SSDriver); ok {

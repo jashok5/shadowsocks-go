@@ -14,13 +14,13 @@ import (
 
 	"github.com/jashok5/shadowsocks-go/internal/model"
 
-	vnetCommon "github.com/ProxyPanel/VNet-SSR/common"
-	vnetNetwork "github.com/ProxyPanel/VNet-SSR/common/network"
-	vnetObfs "github.com/ProxyPanel/VNet-SSR/common/obfs"
-	vnetCore "github.com/ProxyPanel/VNet-SSR/core"
-	vnetServer "github.com/ProxyPanel/VNet-SSR/proxy/server"
-	"github.com/ProxyPanel/VNet-SSR/utils/binaryx"
-	"github.com/ProxyPanel/VNet-SSR/utils/socksproxy"
+	vnetCommon "github.com/jashok5/shadowsocks-go/internal/protocol/ssr/common"
+	vnetNetwork "github.com/jashok5/shadowsocks-go/internal/protocol/ssr/common/network"
+	vnetObfs "github.com/jashok5/shadowsocks-go/internal/protocol/ssr/common/obfs"
+	vnetCore "github.com/jashok5/shadowsocks-go/internal/protocol/ssr/core"
+	vnetServer "github.com/jashok5/shadowsocks-go/internal/protocol/ssr/proxy/server"
+	"github.com/jashok5/shadowsocks-go/internal/protocol/ssr/utils/binaryx"
+	"github.com/jashok5/shadowsocks-go/internal/protocol/ssr/utils/socksproxy"
 	"go.uber.org/zap"
 	"golang.org/x/time/rate"
 )
@@ -188,8 +188,20 @@ func (d *SSRDriver) Stop(_ context.Context, port int) error {
 }
 
 func (d *SSRDriver) Snapshot(_ context.Context) (DriverSnapshot, error) {
-	d.trafficMu.RLock()
-	defer d.trafficMu.RUnlock()
+	d.mu.Lock()
+	detect := make(map[int][]int, len(d.servers))
+	for port, inst := range d.servers {
+		ids := make([]int, 0, len(inst.detect))
+		for id := range inst.detect {
+			ids = append(ids, id)
+		}
+		detect[port] = ids
+		inst.detect = make(map[int]struct{})
+	}
+	d.mu.Unlock()
+
+	d.trafficMu.Lock()
+	defer d.trafficMu.Unlock()
 
 	transfer := make(map[int]model.PortTransfer, len(d.transfer))
 	for p, v := range d.transfer {
@@ -215,17 +227,6 @@ func (d *SSRDriver) Snapshot(_ context.Context) (DriverSnapshot, error) {
 		}
 		userOnline[uid] = arr
 	}
-	detect := make(map[int][]int, len(d.servers))
-	d.mu.RLock()
-	for port, inst := range d.servers {
-		ids := make([]int, 0, len(inst.detect))
-		for id := range inst.detect {
-			ids = append(ids, id)
-		}
-		detect[port] = ids
-	}
-	d.mu.RUnlock()
-
 	userDetect := make(map[int][]int, len(d.userDetect))
 	for uid, rules := range d.userDetect {
 		ids := make([]int, 0, len(rules))
@@ -239,6 +240,10 @@ func (d *SSRDriver) Snapshot(_ context.Context) (DriverSnapshot, error) {
 		wrongIP = append(wrongIP, ip)
 	}
 	sort.Strings(wrongIP)
+
+	d.onlineIP = make(map[int]map[string]struct{})
+	d.userOnlineIP = make(map[int]map[string]struct{})
+	d.userDetect = make(map[int]map[int]struct{})
 
 	return DriverSnapshot{Transfer: transfer, UserTransfer: userTransfer, OnlineIP: online, UserOnlineIP: userOnline, Detect: detect, UserDetect: userDetect, WrongIP: wrongIP}, nil
 }
@@ -670,7 +675,7 @@ func (d *SSRDriver) serveSSRUDP(inst *ssrInstance) {
 			uidInt = inst.cfg.UserID
 		}
 		if inst.proxy.OnlineReport != nil {
-			inst.proxy.OnlineReport.Online(uidInt, addr.String())
+			inst.proxy.OnlineReport.Online(uidInt, addrIP(addr))
 		}
 		d.clearWrongIP(addrIP(addr))
 		if inst.proxy.HostFirewall != nil && !inst.proxy.HostFirewall.JudgeHostWithReport(remoteAddr.GetAddress(), uidInt) {
