@@ -33,10 +33,7 @@ func getMUHost(regexText string, suffix string, user model.User) string {
 		}
 		repl := ""
 		if count < 0 {
-			idx := len(hash) + count
-			if idx < 0 {
-				idx = 0
-			}
+			idx := max(len(hash)+count, 0)
 			repl = hash[idx:]
 		} else {
 			if count > len(hash) {

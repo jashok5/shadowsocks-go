@@ -3,21 +3,22 @@ package obfs
 import (
 	"bytes"
 	"encoding/hex"
-	"github.com/jashok5/shadowsocks-go/internal/protocol/ssr/utils/arrayx"
-	"github.com/jashok5/shadowsocks-go/internal/protocol/ssr/utils/bytesx"
-	"github.com/jashok5/shadowsocks-go/internal/protocol/ssr/utils/randomx"
-	"github.com/sirupsen/logrus"
 	"net/http"
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/jashok5/shadowsocks-go/internal/protocol/ssr/utils/arrayx"
+	"github.com/jashok5/shadowsocks-go/internal/protocol/ssr/utils/bytesx"
+	"github.com/jashok5/shadowsocks-go/internal/protocol/ssr/utils/randomx"
+	"github.com/sirupsen/logrus"
 )
 
 func init() {
 	registerMethod("http_simple", NewHttpSimple)
 }
 
-var USER_AGENT = []string{
+var UserAgent = []string{
 	"Mozilla/5.0 (Windows NT 6.3; WOW64; rv:40.0) Gecko/20100101 Firefox/40.0",
 	"Mozilla/5.0 (Windows NT 6.3; WOW64; rv:40.0) Gecko/20100101 Firefox/44.0",
 	"Mozilla/5.0 (Windows NT 6.1) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/41.0.2228.0 Safari/537.36",
@@ -45,8 +46,6 @@ type HttpSimple struct {
 	Plain
 	hasSentHeader bool
 	hasRecvHeader bool
-	host          string
-	port          int
 	recvBuf       []byte
 }
 
@@ -128,7 +127,7 @@ func (h *HttpSimple) notMatchReturn(buf []byte) ([]byte, bool, bool, error) {
 	return buf, true, false, nil
 }
 
-func (h *HttpSimple) errorReturn(buf []byte) ([]byte, bool, bool, error) {
+func (h *HttpSimple) errorReturn() ([]byte, bool, bool, error) {
 	h.hasSentHeader = true
 	h.hasRecvHeader = true
 	return bytes.Repeat([]byte("E"), 2048), false, false, nil
@@ -148,11 +147,11 @@ func (h *HttpSimple) ClientEncode(buf []byte) ([]byte, error) {
 	}
 	headData := buf[:headLen]
 	buf = buf[headLen:]
-	port := []byte{}
+	var port []byte
 	if h.GetServerInfo().GetPort() != 80 {
 		port = bytesx.ContactSlice([]byte(":"), []byte(strconv.Itoa(h.GetServerInfo().GetPort())))
 	}
-	body := []byte{}
+	var body []byte
 	hosts := ""
 	if h.GetServerInfo().GetObfsParam() != "" {
 		hosts = h.GetServerInfo().GetObfsParam()
@@ -173,7 +172,7 @@ func (h *HttpSimple) ClientEncode(buf []byte) ([]byte, error) {
 		httpHead = bytesx.ContactSlice(httpHead, body, []byte("\r\n\r\n"))
 	} else {
 		httpHead = bytesx.ContactSlice(httpHead, []byte("User-Agent: "),
-			[]byte(randomx.RandomStringsChoice(USER_AGENT)),
+			[]byte(randomx.RandomStringsChoice(UserAgent)),
 			[]byte("\r\n"))
 		httpHead = bytesx.ContactSlice(httpHead, []byte("Accept: text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8\r\nAccept-Language: en-US,en;q=0.8\r\nAccept-Encoding: gzip, deflate\r\nDNT: 1\r\nConnection: keep-alive\r\n\r\n"))
 	}
@@ -189,9 +188,9 @@ func (h *HttpSimple) ClientDecode(buf []byte) ([]byte, bool, error) {
 	if pos >= 0 {
 		h.hasRecvHeader = true
 		return buf[pos+4:], false, nil
-	} else {
-		return []byte{}, false, nil
 	}
+
+	return []byte{}, false, nil
 }
 
 func (h *HttpSimple) ServerEncode(buf []byte) ([]byte, error) {
@@ -233,7 +232,7 @@ func (h *HttpSimple) ServerDecode(buf []byte) ([]byte, bool, bool, error) {
 		datas := strings.Split(string(buf), "\r\n\r\n")
 		resultBuf, err := h.getDataFromHttpHeader(buf)
 		if err != nil {
-			return h.errorReturn(buf)
+			return h.errorReturn()
 		}
 		host := h.getHostFromHttpHeader(buf)
 
@@ -249,7 +248,7 @@ func (h *HttpSimple) ServerDecode(buf []byte) ([]byte, bool, bool, error) {
 		}
 
 		if len(resultBuf) < 4 {
-			return h.errorReturn(buf)
+			return h.errorReturn()
 		}
 
 		if len(datas) > 1 {
@@ -262,7 +261,7 @@ func (h *HttpSimple) ServerDecode(buf []byte) ([]byte, bool, bool, error) {
 		}
 
 		return h.notMatchReturn(buf)
-	} else {
-		return []byte{}, true, false, nil
 	}
+
+	return []byte{}, true, false, nil
 }

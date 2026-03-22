@@ -1,15 +1,15 @@
 package core
 
 type Closeable interface {
-	Close() error;
+	Close() error
 }
 
 type Runable interface {
-	Start() error;
+	Start() error
 }
 
 type Reloadable interface {
-	Reload() error;
+	Reload() error
 }
 
 type HostFirewall interface {
@@ -17,9 +17,9 @@ type HostFirewall interface {
 }
 
 type ObfsProtocolService interface {
-	Update(userID []byte, clientID, connectionID int);
-	SetMaxClient(maxClient int);
-	Insert(userID []byte, clientID, connectionID int) bool;
-	Remove(userID string, clientID int);
-	AuthData() []byte;
+	Update(userID []byte, clientID, connectionID int)
+	SetMaxClient(maxClient int)
+	Insert(userID []byte, clientID, connectionID int) bool
+	Remove(userID string, clientID int)
+	AuthData() []byte
 }

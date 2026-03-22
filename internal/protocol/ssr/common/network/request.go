@@ -1,9 +1,10 @@
 package network
 
 import (
-	"github.com/rs/xid"
 	"net"
 	"time"
+
+	"github.com/rs/xid"
 )
 
 type IRequest interface {
@@ -34,27 +35,27 @@ type Request struct {
 	net.PacketConn
 	RequestID   string
 	RequestTime time.Time
-	Data        interface{}
+	Data        any
 }
 
-func (r *Request) GetRequestId()string{
-	return r.RequestID;
+func (r *Request) GetRequestId() string {
+	return r.RequestID
 }
 
 func (r *Request) Close() error {
 	if r.ISStream {
 		return r.Conn.Close()
-	} else {
-		return r.PacketConn.Close()
 	}
+
+	return r.PacketConn.Close()
 }
 
 func (r *Request) LocalAddr() net.Addr {
 	if r.ISStream {
 		return r.Conn.LocalAddr()
-	} else {
-		return r.PacketConn.LocalAddr()
 	}
+
+	return r.PacketConn.LocalAddr()
 }
 
 func (r *Request) RemoteAddr() net.Addr {
@@ -64,29 +65,29 @@ func (r *Request) RemoteAddr() net.Addr {
 func (r *Request) SetDeadline(t time.Time) error {
 	if r.ISStream {
 		return r.Conn.SetDeadline(t)
-	} else {
-		return r.PacketConn.SetDeadline(t)
 	}
+
+	return r.PacketConn.SetDeadline(t)
 }
 
 func (r *Request) SetReadDeadline(t time.Time) error {
 	if r.ISStream {
 		return r.Conn.SetReadDeadline(t)
-	} else {
-		return r.PacketConn.SetReadDeadline(t)
 	}
+
+	return r.PacketConn.SetReadDeadline(t)
 }
 
 func (r *Request) SetWriteDeadline(t time.Time) error {
 	if r.ISStream {
 		return r.Conn.SetWriteDeadline(t)
-	} else {
-		return r.PacketConn.SetWriteDeadline(t)
 	}
+
+	return r.PacketConn.SetWriteDeadline(t)
 }
 
-func (r *Request) SetKeepAlive(keepAlive bool) error{
-	if tcpConn,ok := r.Conn.(*net.TCPConn);ok{
+func (r *Request) SetKeepAlive(keepAlive bool) error {
+	if tcpConn, ok := r.Conn.(*net.TCPConn); ok {
 		return tcpConn.SetKeepAlive(keepAlive)
 	}
 	return nil

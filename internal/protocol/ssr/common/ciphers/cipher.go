@@ -4,17 +4,18 @@ import (
 	"bytes"
 	"crypto/cipher"
 	"crypto/rand"
+	"io"
+
 	"github.com/jashok5/shadowsocks-go/internal/protocol/ssr/common/ciphers/block"
 	"github.com/jashok5/shadowsocks-go/internal/protocol/ssr/utils/bytesx"
 	"github.com/sirupsen/logrus"
-	"io"
 
 	"github.com/jashok5/shadowsocks-go/internal/protocol/ssr/common/ciphers/aead"
 	"github.com/jashok5/shadowsocks-go/internal/protocol/ssr/common/ciphers/stream"
 	"github.com/pkg/errors"
 )
 
-const AEAD_MAX_SEGMENT_LENGTH = 0x3FFF
+const AeadMaxSegmentLength = 0x3FFF
 
 type ICipher interface {
 	GetKey() []byte
@@ -24,8 +25,8 @@ type ICipher interface {
 }
 
 const (
-	OP_ENCRYPT = 0
-	OP_DECRYPT = 1
+	OpEncrypt = 0
+	OpDecrypt = 1
 )
 
 type SSCipher struct {
@@ -85,7 +86,7 @@ func NewCipher(op int, method string, key, iv []byte) (*SSCipher, error) {
 }
 
 func (s *SSCipher) Encrypt(src []byte) (result []byte, err error) {
-	if s.OP != OP_ENCRYPT {
+	if s.OP != OpEncrypt {
 		return nil, errors.WithStack(errors.New("operation not support."))
 	}
 	if s.Stream != nil {
@@ -99,8 +100,8 @@ func (s *SSCipher) Encrypt(src []byte) (result []byte, err error) {
 		rn := 0
 		overHead := s.AEAD.Overhead()
 		for {
-			buf := make([]byte, 2+overHead+AEAD_MAX_SEGMENT_LENGTH+overHead)
-			dataBuf := buf[2+overHead : 2+overHead+AEAD_MAX_SEGMENT_LENGTH]
+			buf := make([]byte, 2+overHead+AeadMaxSegmentLength+overHead)
+			dataBuf := buf[2+overHead : 2+overHead+AeadMaxSegmentLength]
 			rn, err = r.Read(dataBuf)
 			if err != nil {
 				if err == io.EOF {
@@ -138,7 +139,7 @@ func (s *SSCipher) Encrypt(src []byte) (result []byte, err error) {
 }
 
 func (s *SSCipher) Decrypt(ciphertext []byte) (result []byte, err error) {
-	if s.OP != OP_DECRYPT {
+	if s.OP != OpDecrypt {
 		return nil, errors.WithStack(errors.New("operation not support."))
 	}
 	if s.Stream != nil {
@@ -152,7 +153,7 @@ func (s *SSCipher) Decrypt(ciphertext []byte) (result []byte, err error) {
 		s.AEADReadBuffer.Write(ciphertext)
 		dst := new(bytes.Buffer)
 		sizeTmp := make([]byte, 2+overHead)
-		payloadTmp := make([]byte, AEAD_MAX_SEGMENT_LENGTH+overHead)
+		payloadTmp := make([]byte, AeadMaxSegmentLength+overHead)
 		for {
 			if s.HeadSize == 0 {
 				if s.AEADReadBuffer.Len() == 0 {
@@ -173,7 +174,7 @@ func (s *SSCipher) Decrypt(ciphertext []byte) (result []byte, err error) {
 					return nil, err
 				}
 				increment(s.AEADReadNonce)
-				s.HeadSize = (int(sizeTmp[0])<<8 + int(sizeTmp[1])) & AEAD_MAX_SEGMENT_LENGTH
+				s.HeadSize = (int(sizeTmp[0])<<8 + int(sizeTmp[1])) & AeadMaxSegmentLength
 			}
 
 			if s.AEADReadBuffer.Len() < s.HeadSize+overHead {
@@ -251,7 +252,7 @@ func NewEncryptor(method, key string) (result *Encryptor, err error) {
 		result.IVLen = cp.IVLen()
 	}
 
-	result.EncodeCipher, err = NewCipher(OP_ENCRYPT, method, result.Key, result.IVOut)
+	result.EncodeCipher, err = NewCipher(OpEncrypt, method, result.Key, result.IVOut)
 	result.IVBuf = new(bytes.Buffer)
 	return result, err
 }
@@ -277,7 +278,7 @@ func NewEncryptorWithIv(method, key string, iv []byte) (result *Encryptor, err e
 	}
 
 	result.IVOut = iv[:result.IVLen]
-	result.EncodeCipher, err = NewCipher(OP_ENCRYPT, method, result.Key, result.IVOut)
+	result.EncodeCipher, err = NewCipher(OpEncrypt, method, result.Key, result.IVOut)
 	result.IVBuf = new(bytes.Buffer)
 	return result, err
 }
@@ -290,9 +291,9 @@ func (e *Encryptor) Encrypt(src []byte) (result []byte, err error) {
 	if !e.IVSent {
 		e.IVSent = true
 		return bytesx.ContactSlice(e.IVOut, result), nil
-	} else {
-		return result, nil
 	}
+
+	return result, nil
 }
 
 func (e *Encryptor) Decrypt(ciphertext []byte) (result []byte, err error) {
@@ -312,15 +313,15 @@ func (e *Encryptor) Decrypt(ciphertext []byte) (result []byte, err error) {
 		buf := e.IVBuf.Bytes()
 		decipherIV := buf[:e.IVLen]
 		e.IVIn = decipherIV
-		e.DecodeCipher, err = NewCipher(OP_DECRYPT, e.Method, e.Key, decipherIV)
+		e.DecodeCipher, err = NewCipher(OpDecrypt, e.Method, e.Key, decipherIV)
 		if err != nil {
 			return nil, err
 		}
 		remainBuf := buf[e.IVLen:]
 		return e.DecodeCipher.Decrypt(remainBuf)
-	} else {
-		return []byte{}, nil
 	}
+
+	return []byte{}, nil
 }
 
 func (e *Encryptor) EncryptAll(src, iv []byte) (result []byte, err error) {

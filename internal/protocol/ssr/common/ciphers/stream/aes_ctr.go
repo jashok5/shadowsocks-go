@@ -6,23 +6,23 @@ import (
 )
 
 func init() {
-	registerStreamCiphers("aes-128-ctr", &aes_ctr{16, 16})
-	registerStreamCiphers("aes-192-ctr", &aes_ctr{24, 16})
-	registerStreamCiphers("aes-256-ctr", &aes_ctr{32, 16})
+	registerStreamCiphers("aes-128-ctr", &aesCtr{16, 16})
+	registerStreamCiphers("aes-192-ctr", &aesCtr{24, 16})
+	registerStreamCiphers("aes-256-ctr", &aesCtr{32, 16})
 }
 
-type aes_ctr struct {
+type aesCtr struct {
 	keyLen int
 	ivLen  int
 }
 
-func (a *aes_ctr) KeyLen() int {
+func (a *aesCtr) KeyLen() int {
 	return a.keyLen
 }
-func (a *aes_ctr) IVLen() int {
+func (a *aesCtr) IVLen() int {
 	return a.ivLen
 }
-func (a *aes_ctr) NewStream(key, iv []byte, _ int) (cipher.Stream, error) {
+func (a *aesCtr) NewStream(key, iv []byte, _ int) (cipher.Stream, error) {
 	block, err := aes.NewCipher(key)
 	if err != nil {
 		return nil, err

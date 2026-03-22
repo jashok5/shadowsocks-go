@@ -193,7 +193,7 @@ func (s *Service) syncOnce(ctx context.Context) error {
 			Mode:    s.cfg.RT.SwitchRule.Mode,
 			Expr:    s.cfg.RT.SwitchRule.Expr,
 		},
-		Runtime: runtime.RuntimeOptions{
+		Runtime: runtime.Options{
 			OnUnsupportedCipher: s.cfg.RT.OnUnsupportedCipher,
 			DialTimeout:         s.cfg.RT.DialTimeout,
 			DNSResolver:         s.cfg.RT.DNSResolver,

@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"maps"
 	"net"
 	"sort"
 	"strconv"
@@ -144,11 +145,9 @@ func (d *SSRDriver) Start(_ context.Context, cfg PortConfig) error {
 		cancel()
 		return fmt.Errorf("start ssr udp port %d failed: %w", cfg.Port, err)
 	}
-	inst.wg.Add(1)
-	go func() {
-		defer inst.wg.Done()
+	inst.wg.Go(func() {
 		d.cleanWrongIP(inst)
-	}()
+	})
 
 	d.log.Info("ssr driver start", zap.Int("port", cfg.Port), zap.String("method", cfg.Method), zap.String("protocol", cfg.Protocol), zap.String("obfs", cfg.Obfs))
 	return nil
@@ -251,13 +250,9 @@ func (d *SSRDriver) Snapshot(_ context.Context) (DriverSnapshot, error) {
 	defer d.trafficMu.Unlock()
 
 	transfer := make(map[int]model.PortTransfer, len(d.transfer))
-	for p, v := range d.transfer {
-		transfer[p] = v
-	}
+	maps.Copy(transfer, d.transfer)
 	userTransfer := make(map[int]model.PortTransfer, len(d.userTransfer))
-	for uid, v := range d.userTransfer {
-		userTransfer[uid] = v
-	}
+	maps.Copy(userTransfer, d.userTransfer)
 	online := make(map[int][]string, len(d.onlineIP))
 	for p, m := range d.onlineIP {
 		arr := make([]string, 0, len(m))
@@ -460,7 +455,7 @@ func buildMultiUserObfsParam(cfg PortConfig) string {
 	items := make([]string, 0, 1+len(cfg.MUHosts))
 	seen := make(map[string]struct{}, 1+len(cfg.MUHosts))
 	if base != "" {
-		for _, part := range strings.Split(base, ",") {
+		for part := range strings.SplitSeq(base, ",") {
 			v := strings.TrimSpace(part)
 			if v == "" {
 				continue
@@ -511,25 +506,6 @@ func canHotReloadSSR(oldCfg, newCfg PortConfig) bool {
 	return true
 }
 
-func normalizeHostOnly(v string) string {
-	v = strings.TrimSpace(v)
-	if v == "" {
-		return ""
-	}
-	if strings.HasPrefix(v, "[") {
-		if idx := strings.Index(v, "]"); idx > 1 {
-			return strings.ToLower(v[1:idx])
-		}
-	}
-	if h, _, err := net.SplitHostPort(v); err == nil {
-		return strings.ToLower(strings.TrimSpace(h))
-	}
-	if i := strings.Index(v, ":"); i > 0 && strings.Count(v, ":") == 1 {
-		return strings.ToLower(strings.TrimSpace(v[:i]))
-	}
-	return strings.ToLower(v)
-}
-
 func sameStringSlice(a, b []string) bool {
 	if len(a) != len(b) {
 		return false
@@ -548,11 +524,9 @@ func (d *SSRDriver) startTCPListener(inst *ssrInstance) error {
 		return err
 	}
 	inst.tcp = tcpLn
-	inst.wg.Add(1)
-	go func() {
-		defer inst.wg.Done()
+	inst.wg.Go(func() {
 		d.serveSSRTCP(inst)
-	}()
+	})
 	return nil
 }
 
@@ -679,7 +653,7 @@ func relayOneWayLimited(ctx context.Context, src net.Conn, dst net.Conn, limiter
 			_, _ = dst.Write(buf[:n])
 		}
 		if err != nil {
-			if ne, ok := err.(net.Error); ok && ne.Timeout() {
+			if ne, ok := errors.AsType[net.Error](err); ok && ne.Timeout() {
 				select {
 				case <-ctx.Done():
 					if c, ok := dst.(*net.TCPConn); ok {
@@ -707,11 +681,9 @@ func (d *SSRDriver) startUDPListener(inst *ssrInstance) error {
 		return err
 	}
 	inst.udp = udpConn
-	inst.wg.Add(1)
-	go func() {
-		defer inst.wg.Done()
+	inst.wg.Go(func() {
 		d.serveSSRUDP(inst)
-	}()
+	})
 	return nil
 }
 

@@ -1,6 +1,6 @@
 package obfs
 
-type PlainFactory func(string) (Plain,error)
+type PlainFactory func(string) (Plain, error)
 
 // Plain interface
 type Plain interface {
@@ -21,20 +21,20 @@ type Plain interface {
 	ServerPostDecrypt(buf []byte) ([]byte, bool, error)
 	ClientUDPPreEncrypt(buf []byte) ([]byte, error)
 	ClientUDPPostDecrypt(buf []byte) ([]byte, error)
-	ServerUDPPreEncrypt(buf,uid []byte) ([]byte, error)
+	ServerUDPPreEncrypt(buf, uid []byte) ([]byte, error)
 	ServerUDPPostDecrypt(buf []byte) ([]byte, string, error)
 	Dispose()
 	GetHeadSize(buf []byte, defaultValue int) int
 }
 
 var (
-	method_supported = make(map[string]PlainFactory)
+	methodSupported = make(map[string]PlainFactory)
 )
 
 func registerMethod(method string, factory PlainFactory) {
-	method_supported[method] = factory
+	methodSupported[method] = factory
 }
 
-func GetObfs(method string) (Plain,error){
-	return method_supported[method](method)
+func GetObfs(method string) (Plain, error) {
+	return methodSupported[method](method)
 }

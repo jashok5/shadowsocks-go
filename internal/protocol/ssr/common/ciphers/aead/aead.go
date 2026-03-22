@@ -15,10 +15,6 @@ func registerAEADCiphers(method string, c IAEADCipher) {
 	aeadCiphers[method] = c
 }
 
-func GetAEADCiphers() map[string]IAEADCipher {
-	return aeadCiphers
-}
-
 func GetAEADCipher(method string) IAEADCipher {
 	return aeadCiphers[method]
 }

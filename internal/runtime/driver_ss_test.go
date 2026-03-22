@@ -69,14 +69,12 @@ func TestSSDriverConcurrentTraffic(t *testing.T) {
 	const workers = 16
 	const loops = 1000
 	var wg sync.WaitGroup
-	for i := 0; i < workers; i++ {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			for j := 0; j < loops; j++ {
+	for range workers {
+		wg.Go(func() {
+			for range loops {
 				d.AddTraffic(port, 1, 2)
 			}
-		}()
+		})
 	}
 	wg.Wait()
 

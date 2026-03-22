@@ -7,21 +7,21 @@ import (
 )
 
 func init() {
-	registerStreamCiphers("rc4-md5", &rc4_md5{16, 16})
+	registerStreamCiphers("rc4-md5", &rc4Md5{16, 16})
 }
 
-type rc4_md5 struct {
+type rc4Md5 struct {
 	keyLen int
 	ivLen  int
 }
 
-func (a *rc4_md5) KeyLen() int {
+func (a *rc4Md5) KeyLen() int {
 	return a.keyLen
 }
-func (a *rc4_md5) IVLen() int {
+func (a *rc4Md5) IVLen() int {
 	return a.ivLen
 }
-func (a *rc4_md5) NewStream(key, iv []byte, _ int) (cipher.Stream, error) {
+func (a *rc4Md5) NewStream(key, iv []byte, _ int) (cipher.Stream, error) {
 	h := md5.New()
 	h.Write(key)
 	h.Write(iv)

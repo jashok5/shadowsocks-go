@@ -12,10 +12,6 @@ type NoopManager struct {
 	log *zap.Logger
 }
 
-func NewNoopManager(log *zap.Logger) *NoopManager {
-	return &NoopManager{log: log}
-}
-
 func (m *NoopManager) Sync(_ context.Context, in SyncInput) error {
 	m.log.Info("runtime sync applied", zap.Int("users", len(in.Users)), zap.Int("rules", len(in.Rules)))
 	return nil

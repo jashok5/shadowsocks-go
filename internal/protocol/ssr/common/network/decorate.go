@@ -4,6 +4,11 @@ import (
 	"bytes"
 	"encoding/hex"
 	"fmt"
+	"net"
+	"strings"
+	"sync"
+	"sync/atomic"
+
 	"github.com/jashok5/shadowsocks-go/internal/protocol/ssr/common"
 	"github.com/jashok5/shadowsocks-go/internal/protocol/ssr/common/ciphers"
 	"github.com/jashok5/shadowsocks-go/internal/protocol/ssr/common/obfs"
@@ -11,10 +16,6 @@ import (
 	"github.com/jashok5/shadowsocks-go/internal/protocol/ssr/utils/binaryx"
 	"github.com/pkg/errors"
 	"github.com/sirupsen/logrus"
-	"net"
-	"strings"
-	"sync"
-	"sync/atomic"
 )
 
 type ILimiter interface {
@@ -158,7 +159,7 @@ func (ssrd *ShadowsocksRDecorate) Read(buf []byte) (n int, err error) {
 			}).Debug("ShadowsocksRDecorate encryptor Decrypt")
 		}
 
-		if err != nil && strings.Contains(err.Error(),"buf is too short"){
+		if err != nil && strings.Contains(err.Error(), "buf is too short") {
 			return ssrd.Read(buf)
 		}
 
@@ -316,7 +317,7 @@ func (ssrd *ShadowsocksRDecorate) WriteTo(p, uid []byte, addr net.Addr) error {
 	}
 	n, err := ssrd.Request.WriteTo(data, addr)
 	if ssrd.TrafficReport != nil {
-		ssrd.TrafficReport.Download(int(binaryx.LEBytesToUInt32([]byte(uid))), int64(n))
+		ssrd.TrafficReport.Download(int(binaryx.LEBytesToUInt32(uid)), int64(n))
 	}
 	return err
 }
@@ -340,10 +341,10 @@ func (ssrd *ShadowsocksRDecorate) getServerInfo(isObfs bool) obfs.ServerInfo {
 	serverInfo.SetRecvIv([]byte{})
 	serverInfo.SetKeyStr(ssrd.encryptor.KeyStr)
 	serverInfo.SetKey(ssrd.encryptor.Key)
-	serverInfo.SetHeadLen(obfs.DEFAULT_HEAD_LEN)
+	serverInfo.SetHeadLen(obfs.DefaultHeadLen)
 	// TODO: need calculate,for now, I don't know how to implement it on windows
-	serverInfo.SetTCPMss(obfs.TCP_MSS)
-	serverInfo.SetBufferSize(obfs.BUF_SIZE - ssrd.Overhead)
+	serverInfo.SetTCPMss(obfs.TcpMss)
+	serverInfo.SetBufferSize(obfs.BufSize - ssrd.Overhead)
 	serverInfo.SetOverhead(ssrd.Overhead)
 	serverInfo.SetUpdateUserFunc(ssrd.UpdateUser)
 	serverInfo.SetUsers(ssrd.Users)

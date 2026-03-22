@@ -7,7 +7,6 @@ import (
 	"encoding/base64"
 	"encoding/hex"
 	"fmt"
-	"github.com/jashok5/shadowsocks-go/internal/protocol/ssr/core"
 	"hash"
 	"math"
 	"math/rand"
@@ -15,6 +14,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/jashok5/shadowsocks-go/internal/protocol/ssr/core"
 
 	"github.com/jashok5/shadowsocks-go/internal/protocol/ssr/common/ciphers"
 	"github.com/jashok5/shadowsocks-go/internal/protocol/ssr/common/log"
@@ -46,7 +47,7 @@ func AuthAes128Sha1Factory(method string) (Plain, error) {
 
 type AuthAes128Sha1 struct {
 	*AuthBase
-	*ObfsAuthChainData
+	*AuthChainData
 	HashFunc      func() hash.Hash
 	RecvBuf       []byte
 	UnitLen       int
@@ -179,7 +180,7 @@ func (a *AuthAes128Sha1) packAuthData(authData, buf []byte) ([]byte, error) {
 	macKey := bytesx.ContactSlice(a.GetServerInfo().GetIv(), a.GetServerInfo().GetKey())
 
 	param := a.GetServerInfo().GetProtocolParam()
-	uidPack := randomx.RandomBytes(4)
+	var uidPack []byte
 	if strings.Contains(param, ":") {
 		items := strings.Split(param, ":")
 		if len(items) > 1 {
@@ -290,7 +291,7 @@ func (a *AuthAes128Sha1) ServerPreEncrypt(buf []byte) ([]byte, error) {
 		return buf, nil
 	}
 
-	result := []byte{}
+	var result []byte
 	originDataLength := len(buf)
 	for len(buf) > a.UnitLen {
 		result = bytesx.ContactSlice(result, a.packData(buf[:a.UnitLen], originDataLength))
@@ -419,9 +420,9 @@ func (a *AuthAes128Sha1) ServerPostDecrypt(buf []byte) (result []byte, sendback 
 			if a.RecvID == 0 {
 				log.Error("%s %s", a.NoCompatibleMethod, "over size")
 				return bytes.Repeat([]byte{byte('E')}, 2048), false, nil
-			} else {
-				return []byte{}, false, errors.New("server_post_decrype data error")
 			}
+
+			return []byte{}, false, errors.New("server_post_decrype data error")
 		}
 
 		if length > len(a.RecvBuf) {
@@ -469,7 +470,7 @@ func (a *AuthAes128Sha1) ClientUDPPreEncrypt(buf []byte) ([]byte, error) {
 				if err != nil {
 					return nil, err
 				}
-				uidPack := binaryx.LEUint32ToBytes(uint32((uidInt)))
+				uidPack := binaryx.LEUint32ToBytes(uint32(uidInt))
 				a.UserID = uidPack
 			}
 
@@ -492,7 +493,7 @@ func (a *AuthAes128Sha1) ClientUDPPostDecrypt(buf []byte) ([]byte, error) {
 	return buf[0 : len(buf)-4], nil
 }
 
-func (a *AuthAes128Sha1) ServerUDPPreEncrypt(buf, uid []byte) ([]byte, error) {
+func (a *AuthAes128Sha1) ServerUDPPreEncrypt(buf, _ []byte) ([]byte, error) {
 	userKey := a.GetServerInfo().GetKey()
 	return bytesx.ContactSlice(buf, hmacSum(userKey, buf, a.HashFunc)[:4]), nil
 }

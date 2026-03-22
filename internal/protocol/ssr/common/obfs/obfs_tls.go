@@ -4,11 +4,12 @@ import (
 	"bytes"
 	"encoding/binary"
 	"encoding/hex"
-	"github.com/sirupsen/logrus"
 	"math"
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/sirupsen/logrus"
 
 	"github.com/pkg/errors"
 
@@ -19,19 +20,19 @@ import (
 	"github.com/jashok5/shadowsocks-go/internal/protocol/ssr/utils/stringx"
 )
 
-// golang dont support declare constant array
+// golang don't support declare constant array
 // so we use variable to replace it
 var (
-	DEFAULT_VERSION       = []byte{0x03, 0x03}
-	DEFAULT_OVERHEAD      = 5
-	DEFAULT_MAX_TIME_DIFF = 60 * 60 * 24
+	DefaultVersion     = []byte{0x03, 0x03}
+	DefaultOverhead    = 5
+	DefaultMaxTimeDiff = 60 * 60 * 24
 )
 
 func init() {
 	registerMethod("tls1.2_ticket_auth", NewObfsTLS)
 }
 
-type ObfsAuthData struct {
+type AuthData struct {
 	ServerInfo
 	ClientData *cache.Cache
 	ClientID   []byte
@@ -39,8 +40,8 @@ type ObfsAuthData struct {
 	TicketBuf  map[string][]byte
 }
 
-func NewObfsAuthData() *ObfsAuthData {
-	return &ObfsAuthData{
+func NewObfsAuthData() *AuthData {
+	return &AuthData{
 		ServerInfo: NewServerInfo(),
 		TicketBuf:  make(map[string][]byte),
 		ClientID:   randomx.RandomBytes(32),
@@ -48,9 +49,9 @@ func NewObfsAuthData() *ObfsAuthData {
 	}
 }
 
-type ObfsTLS struct {
+type TLS struct {
 	Plain
-	*ObfsAuthData
+	*AuthData
 	HandshakeStatus int
 	SendBuffer      []byte
 	RecvBuffer      []byte
@@ -65,44 +66,44 @@ func NewObfsTLS(method string) (Plain, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &ObfsTLS{
+	return &TLS{
 		Plain:           newPlain,
 		HandshakeStatus: 0,
-		MaxTimeDiff:     DEFAULT_MAX_TIME_DIFF,
-		TLSVersion:      DEFAULT_VERSION,
-		Overhead:        DEFAULT_OVERHEAD,
-		ObfsAuthData:    NewObfsAuthData(),
+		MaxTimeDiff:     DefaultMaxTimeDiff,
+		TLSVersion:      DefaultVersion,
+		Overhead:        DefaultOverhead,
+		AuthData:        NewObfsAuthData(),
 	}, nil
 }
 
-func (otls *ObfsTLS) GetOverhead(direction bool) int {
+func (otls *TLS) GetOverhead(bool) int {
 	return otls.Overhead
 }
 
-func (otls *ObfsTLS) GetServerInfo() ServerInfo {
+func (otls *TLS) GetServerInfo() ServerInfo {
 	return otls.Plain.GetServerInfo()
 }
 
-func (otls *ObfsTLS) SetServerInfo(s ServerInfo) {
+func (otls *TLS) SetServerInfo(s ServerInfo) {
 	otls.Plain.SetServerInfo(s)
 }
 
-func (otls *ObfsTLS) ClientPreEncrypt(buf []byte) ([]byte, error) {
+func (otls *TLS) ClientPreEncrypt(buf []byte) ([]byte, error) {
 	return otls.Plain.ClientPreEncrypt(buf)
 }
 
-func (otls *ObfsTLS) ClientEncode(buf []byte) ([]byte, error) {
+func (otls *TLS) ClientEncode(buf []byte) ([]byte, error) {
 	if otls.HandshakeStatus == -1 {
 		return buf, nil
 	}
 
 	if (otls.HandshakeStatus & 8) == 8 {
-		ret := []byte{}
+		var ret []byte
 		for len(buf) > 2048 {
 			left := float64(binary.BigEndian.Uint16(randomx.RandomBytes(2))%4096 + 100)
 			right := float64(len(buf))
 			size := uint16(math.Min(left, right))
-			ret = conbineToBytes(ret, byte(0x17), otls.TLSVersion, uint16(size), buf[:size])
+			ret = conbineToBytes(ret, byte(0x17), otls.TLSVersion, size, buf[:size])
 			buf = buf[size:]
 		}
 		if len(buf) > 0 {
@@ -118,9 +119,9 @@ func (otls *ObfsTLS) ClientEncode(buf []byte) ([]byte, error) {
 		data := new(bytes.Buffer)
 		ext := new(bytes.Buffer)
 		binary.Write(data, binary.BigEndian, otls.TLSVersion)
-		binary.Write(data, binary.BigEndian, otls.packAuthData(otls.ObfsAuthData.ClientID))
+		binary.Write(data, binary.BigEndian, otls.packAuthData(otls.AuthData.ClientID))
 		binary.Write(data, binary.BigEndian, byte(0x20))
-		binary.Write(data, binary.BigEndian, otls.ObfsAuthData.ClientID)
+		binary.Write(data, binary.BigEndian, otls.AuthData.ClientID)
 		binary.Write(data, binary.BigEndian, []byte{0x0, 0x1c, 0xc0, 0x2b, 0xc0, 0x2f, 0xcc, 0xa9, 0xcc, 0xa8, 0xcc, 0x14, 0xcc, 0x13, 0xc0, 0xa,
 			0xc0, 0x14, 0xc0, 0x9, 0xc0, 0x13, 0x0, 0x9c, 0x0, 0x35, 0x0, 0x2f, 0x0, 0xa})
 		binary.Write(data, binary.BigEndian, []byte{0x0, 0x01})
@@ -144,13 +145,13 @@ func (otls *ObfsTLS) ClientEncode(buf []byte) ([]byte, error) {
 		binary.Write(ext, binary.BigEndian, otls.sni(host))
 		binary.Write(ext, binary.BigEndian, []byte{0x00, 0x17, 0x00, 0x00})
 
-		if otls.ObfsAuthData.TicketBuf[host] == nil {
-			otls.ObfsAuthData.TicketBuf[host] = randomx.RandomBytes((int(randomx.Uint16())%17 + 8) * 16)
+		if otls.AuthData.TicketBuf[host] == nil {
+			otls.AuthData.TicketBuf[host] = randomx.RandomBytes((int(randomx.Uint16())%17 + 8) * 16)
 		}
 		binary.Write(ext, binary.BigEndian, conbineToBytes(
 			[]byte{0x00, 0x23},
-			len(otls.ObfsAuthData.TicketBuf[host]),
-			otls.ObfsAuthData.TicketBuf[host]))
+			len(otls.AuthData.TicketBuf[host]),
+			otls.AuthData.TicketBuf[host]))
 
 		binary.Write(ext, binary.BigEndian, MustHexDecode("000d001600140601060305010503040104030301030302010203"))
 		binary.Write(ext, binary.BigEndian, MustHexDecode("000500050100000000"))
@@ -169,7 +170,7 @@ func (otls *ObfsTLS) ClientEncode(buf []byte) ([]byte, error) {
 	} else if otls.HandshakeStatus == 1 && len(buf) == 0 {
 		data := conbineToBytes(byte(0x14), otls.TLSVersion, []byte{0x00, 0x01, 0x01}) //ChangeCipherSpec
 		data = conbineToBytes(data, byte(0x16), otls.TLSVersion, []byte{0x00, 0x20}, randomx.RandomBytes(22))
-		data = conbineToBytes(data, hmacsha1(conbineToBytes(otls.GetServerInfo().GetKey(), otls.ObfsAuthData.ClientID), data)[:10])
+		data = conbineToBytes(data, hmacsha1(conbineToBytes(otls.GetServerInfo().GetKey(), otls.AuthData.ClientID), data)[:10])
 		ret := conbineToBytes(data, otls.SendBuffer)
 		otls.SendBuffer = []byte{}
 		otls.HandshakeStatus = 8
@@ -179,8 +180,8 @@ func (otls *ObfsTLS) ClientEncode(buf []byte) ([]byte, error) {
 	return []byte{}, nil
 }
 
-//ClientDecode buffer_to_recv, is_need_to_encode_and_send_back
-func (otls *ObfsTLS) ClientDecode(buf []byte) ([]byte, bool, error) {
+// ClientDecode buffer_to_recv, is_need_to_encode_and_send_back
+func (otls *TLS) ClientDecode(buf []byte) ([]byte, bool, error) {
 	if otls.HandshakeStatus == -1 {
 		return buf, false, nil
 	}
@@ -208,16 +209,16 @@ func (otls *ObfsTLS) ClientDecode(buf []byte) ([]byte, bool, error) {
 	}
 
 	verify := buf[11:33]
-	if !bytes.Equal(hmacsha1(conbineToBytes(otls.GetServerInfo().GetKey(), otls.ObfsAuthData.ClientID), verify)[:10], buf[33:43]) {
+	if !bytes.Equal(hmacsha1(conbineToBytes(otls.GetServerInfo().GetKey(), otls.AuthData.ClientID), verify)[:10], buf[33:43]) {
 		return nil, false, errors.New("client_decode data error")
 	}
-	if !bytes.Equal(hmacsha1(conbineToBytes(otls.GetServerInfo().GetKey(), otls.ObfsAuthData.ClientID), buf[:len(buf)-10])[:10], buf[len(buf)-10:]) {
+	if !bytes.Equal(hmacsha1(conbineToBytes(otls.GetServerInfo().GetKey(), otls.AuthData.ClientID), buf[:len(buf)-10])[:10], buf[len(buf)-10:]) {
 		return nil, false, errors.New("client_decode data error")
 	}
 	return []byte{}, true, nil
 }
 
-func (otls *ObfsTLS) ServerEncode(buf []byte) ([]byte, error) {
+func (otls *TLS) ServerEncode(buf []byte) ([]byte, error) {
 	if otls.HandshakeStatus == -1 {
 		return buf, nil
 	}
@@ -266,7 +267,7 @@ func (otls *ObfsTLS) ServerEncode(buf []byte) ([]byte, error) {
 }
 
 // ServerDecode return buffer_to_recv, is_need_decrypt, is_need_to_encode_and_send_back
-func (otls *ObfsTLS) ServerDecode(buf []byte) ([]byte, bool, bool, error) {
+func (otls *TLS) ServerDecode(buf []byte) ([]byte, bool, bool, error) {
 	//log.Debug("HandshakeStatus %d otls.RecvBufferLength %d",otls.HandshakeStatus,len(otls.RecvBuffer))
 	if otls.HandshakeStatus == -1 {
 		return buf, true, false, nil
@@ -365,11 +366,10 @@ func (otls *ObfsTLS) ServerDecode(buf []byte) ([]byte, bool, bool, error) {
 		return otls.DecodeErrorReturn(originBuf)
 	}
 	sessionId := buf[1 : sessionLen+1]
-	buf = buf[sessionLen+1:]
 	otls.ClientID = sessionId
 	sha1 := hmacsha1(conbineToBytes(otls.GetServerInfo().GetKey(), sessionId), verifyId[:22])[:10]
 	utcTime := int(binary.BigEndian.Uint32(verifyId[:4]))
-	timeDif := int(int(time.Now().Unix()) - int(utcTime))
+	timeDif := int(time.Now().Unix()) - utcTime
 
 	if otls.GetServerInfo().GetObfsParam() != "" {
 		dif, err := strconv.Atoi(otls.GetServerInfo().GetObfsParam())
@@ -380,7 +380,7 @@ func (otls *ObfsTLS) ServerDecode(buf []byte) ([]byte, bool, bool, error) {
 
 	if otls.MaxTimeDiff > 0 &&
 		(timeDif < -otls.MaxTimeDiff ||
-			timeDif > otls.MaxTimeDiff || int32(utcTime-otls.ObfsAuthData.StartTime) < int32(otls.MaxTimeDiff/2)) {
+			timeDif > otls.MaxTimeDiff || int32(utcTime-otls.AuthData.StartTime) < int32(otls.MaxTimeDiff/2)) {
 		logrus.WithFields(logrus.Fields{
 			"reciveUtcTime": uint32(utcTime),
 			"nowUnix":       time.Now().Unix(),
@@ -399,7 +399,7 @@ func (otls *ObfsTLS) ServerDecode(buf []byte) ([]byte, bool, bool, error) {
 		return otls.DecodeErrorReturn(originBuf)
 	}
 
-	otls.ClientData.Put(string(verifyId[:22]), sessionId, time.Duration(DEFAULT_MAX_TIME_DIFF)*time.Second)
+	otls.ClientData.Put(string(verifyId[:22]), sessionId, time.Duration(DefaultMaxTimeDiff)*time.Second)
 	if len(otls.RecvBuffer) >= 11 {
 		ret, _, _, _ := otls.ServerDecode([]byte{})
 		return ret, true, true, nil
@@ -407,7 +407,7 @@ func (otls *ObfsTLS) ServerDecode(buf []byte) ([]byte, bool, bool, error) {
 	return []byte{}, false, true, nil
 }
 
-func (otls *ObfsTLS) packAuthData(clientId []byte) []byte {
+func (otls *TLS) packAuthData(clientId []byte) []byte {
 	dataBuf := new(bytes.Buffer)
 	binary.Write(dataBuf, binary.BigEndian, uint32(time.Now().Unix()&0xFFFFFFFF))
 	binary.Write(dataBuf, binary.BigEndian, randomx.RandomBytes(18))
@@ -415,14 +415,14 @@ func (otls *ObfsTLS) packAuthData(clientId []byte) []byte {
 	return dataBuf.Bytes()
 }
 
-func (otls *ObfsTLS) sni(host string) []byte {
+func (otls *TLS) sni(host string) []byte {
 	url := []byte(host)
 	data := conbineToBytes([]byte{0x00}, uint16(len(url)), url)
 	data = conbineToBytes([]byte{0x00, 0x00}, uint16(len(data)+2), uint16(len(data)), data)
 	return data
 }
 
-func (otls *ObfsTLS) DecodeErrorReturn(buf []byte) ([]byte, bool, bool, error) {
+func (otls *TLS) DecodeErrorReturn(buf []byte) ([]byte, bool, bool, error) {
 	otls.HandshakeStatus = -1
 	if otls.Overhead > 0 {
 		otls.GetServerInfo().SetOverhead(otls.GetServerInfo().GetOverhead() - otls.Overhead)

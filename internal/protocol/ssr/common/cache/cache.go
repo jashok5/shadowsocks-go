@@ -6,7 +6,6 @@ import (
 	"time"
 )
 
-// Cache store element with a expired time
 type Cache struct {
 	*cache
 }
@@ -18,19 +17,17 @@ type cache struct {
 
 type element struct {
 	Expired time.Time
-	Payload interface{}
+	Payload any
 }
 
-// Put element in Cache with its ttl
-func (c *cache) Put(key interface{}, payload interface{}, ttl time.Duration) {
+func (c *cache) Put(key any, payload any, ttl time.Duration) {
 	c.mapping.Store(key, &element{
 		Payload: payload,
 		Expired: time.Now().Add(ttl),
 	})
 }
 
-// Get element in Cache, and drop when it expired
-func (c *cache) Get(key interface{}) interface{} {
+func (c *cache) Get(key any) any {
 	item, exist := c.mapping.Load(key)
 	if !exist {
 		return nil
@@ -44,8 +41,8 @@ func (c *cache) Get(key interface{}) interface{} {
 	return elm.Payload
 }
 
-func (c *cache) Range(callback func(key, value interface{})) {
-	c.mapping.Range(func(k, v interface{}) bool {
+func (c *cache) Range(callback func(key, value any)) {
+	c.mapping.Range(func(k, v any) bool {
 		elm := v.(*element)
 		if time.Since(elm.Expired) > 0 {
 			c.mapping.Delete(k)
@@ -57,8 +54,7 @@ func (c *cache) Range(callback func(key, value interface{})) {
 }
 
 func (c *cache) cleanup() {
-	c.mapping.Range(func(k, v interface{}) bool {
-		// key := k.(string)
+	c.mapping.Range(func(k, v any) bool {
 		elm := v.(*element)
 		if time.Since(elm.Expired) > 0 {
 			c.mapping.Delete(k)
@@ -69,7 +65,7 @@ func (c *cache) cleanup() {
 
 func (c *cache) Size() int {
 	var result int
-	c.Range(func(k, v interface{}) {
+	c.Range(func(k, v any) {
 		result++
 	})
 	return result
@@ -78,6 +74,13 @@ func (c *cache) Size() int {
 type janitor struct {
 	interval time.Duration
 	stop     chan struct{}
+	stopOnce sync.Once
+}
+
+func (j *janitor) Stop() {
+	j.stopOnce.Do(func() {
+		close(j.stop)
+	})
 }
 
 func (j *janitor) process(c *cache) {
@@ -93,11 +96,6 @@ func (j *janitor) process(c *cache) {
 	}
 }
 
-func stopJanitor(c *Cache) {
-	c.janitor.stop <- struct{}{}
-}
-
-// New return *Cache
 func New(interval time.Duration) *Cache {
 	j := &janitor{
 		interval: interval,
@@ -106,7 +104,9 @@ func New(interval time.Duration) *Cache {
 	c := &cache{janitor: j}
 	go j.process(c)
 	C := &Cache{c}
-	// this is very interesting,it worth be deep learning
-	runtime.SetFinalizer(C, stopJanitor)
+
+	runtime.AddCleanup(C, func(j *janitor) {
+		j.Stop()
+	}, j)
 	return C
 }

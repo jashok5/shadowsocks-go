@@ -4,7 +4,6 @@ import (
 	"crypto/md5"
 	"errors"
 	"net"
-	"sort"
 	"strings"
 
 	"github.com/jashok5/shadowsocks-go/internal/protocol/ss/shadowaead"
@@ -42,17 +41,6 @@ var aeadList = map[string]struct {
 	aeadChacha20Poly1305: {32, shadowaead.Chacha20Poly1305},
 }
 
-// ListCipher returns a list of available cipher names sorted alphabetically.
-func ListCipher() []string {
-	var l []string
-	for k := range aeadList {
-		l = append(l, k)
-	}
-	sort.Strings(l)
-	return l
-}
-
-// PickCipher returns a Cipher of the given name. Derive key from password if given key is empty.
 func PickCipher(name string, key []byte, password string) (Cipher, error) {
 	name = strings.ToUpper(name)
 

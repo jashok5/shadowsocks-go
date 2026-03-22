@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"maps"
 	"sort"
 	"strings"
 	"sync"
@@ -35,10 +36,6 @@ type MemoryManager struct {
 	nodeInfo model.NodeInfo
 	rules    []model.DetectRule
 	servers  map[int]serverState
-}
-
-func NewMemoryManager(log *zap.Logger) *MemoryManager {
-	return NewMemoryManagerWithDriver(log, NewMockDriver(), 8)
 }
 
 func NewMemoryManagerWithDriver(log *zap.Logger, drv Driver, workers int) *MemoryManager {
@@ -170,19 +167,14 @@ func (m *MemoryManager) applyOps(ctx context.Context, ops []reconcileOp) error {
 	jobs := make(chan reconcileOp)
 	errCh := make(chan error, 1)
 
-	workers := m.workers
-	if workers > len(ops) {
-		workers = len(ops)
-	}
+	workers := min(m.workers, len(ops))
 	if workers <= 0 {
 		workers = 1
 	}
 
 	var wg sync.WaitGroup
 	for i := 0; i < workers; i++ {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
+		wg.Go(func() {
 			for op := range jobs {
 				var err error
 				opCtx, cancel := context.WithTimeout(ctx, reconcileOpTimeout)
@@ -205,7 +197,7 @@ func (m *MemoryManager) applyOps(ctx context.Context, ops []reconcileOp) error {
 					return
 				}
 			}
-		}()
+		})
 	}
 
 	for _, op := range ops {
@@ -404,7 +396,7 @@ func classifyRules(rules []model.DetectRule) DetectBuckets {
 	return b
 }
 
-func buildPortConfig(u model.User, node model.NodeInfo, buckets DetectBuckets, ruleHash string, opts RuntimeOptions) PortConfig {
+func buildPortConfig(u model.User, node model.NodeInfo, buckets DetectBuckets, ruleHash string, opts Options) PortConfig {
 	port := effectivePort(u, node)
 	users := map[int]string{}
 	if u.IsMultiUser != 0 {
@@ -440,17 +432,13 @@ func buildPortConfig(u model.User, node model.NodeInfo, buckets DetectBuckets, r
 
 func cloneIntStringMap(in map[int]string) map[int]string {
 	out := make(map[int]string, len(in))
-	for k, v := range in {
-		out[k] = v
-	}
+	maps.Copy(out, in)
 	return out
 }
 
 func cloneIntFloatMap(in map[int]float64) map[int]float64 {
 	out := make(map[int]float64, len(in))
-	for k, v := range in {
-		out[k] = v
-	}
+	maps.Copy(out, in)
 	return out
 }
 
@@ -506,9 +494,7 @@ func hashMUHosts(hosts []string) string {
 
 func cloneStringMap(in map[int]string) map[int]string {
 	out := make(map[int]string, len(in))
-	for k, v := range in {
-		out[k] = v
-	}
+	maps.Copy(out, in)
 	return out
 }
 

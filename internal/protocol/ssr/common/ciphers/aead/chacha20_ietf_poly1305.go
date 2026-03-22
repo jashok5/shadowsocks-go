@@ -2,8 +2,8 @@ package aead
 
 import (
 	"crypto/cipher"
-	"github.com/jashok5/shadowsocks-go/internal/protocol/ssr/utils/shadowsocksx"
 
+	"github.com/jashok5/shadowsocks-go/internal/protocol/ssr/utils/shadowsocksx"
 	"golang.org/x/crypto/chacha20poly1305"
 )
 
@@ -32,6 +32,6 @@ func (c *chacha20IetfPoly1305) NonceSize() int {
 
 func (c *chacha20IetfPoly1305) NewAEAD(key []byte, salt []byte, _ int) (cipher.AEAD, error) {
 	subkey := make([]byte, c.KeySize())
-	shadowsocksx.HKDF_SHA1(key, salt, []byte("ss-subkey"), subkey)
+	shadowsocksx.HkdfSha1(key, salt, []byte("ss-subkey"), subkey)
 	return chacha20poly1305.New(subkey)
 }

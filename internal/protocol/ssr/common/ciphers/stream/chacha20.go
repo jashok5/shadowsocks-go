@@ -3,7 +3,7 @@ package stream
 import (
 	"crypto/cipher"
 
-	chacha20 "gitlab.com/yawning/chacha20.git"
+	"gitlab.com/yawning/chacha20.git"
 )
 
 func init() {

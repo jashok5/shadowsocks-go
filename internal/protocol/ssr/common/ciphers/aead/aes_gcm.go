@@ -3,6 +3,7 @@ package aead
 import (
 	"crypto/aes"
 	"crypto/cipher"
+
 	"github.com/jashok5/shadowsocks-go/internal/protocol/ssr/utils/shadowsocksx"
 )
 
@@ -33,7 +34,7 @@ func (a *aesGcm) NonceSize() int {
 
 func (a *aesGcm) NewAEAD(key []byte, salt []byte, _ int) (cipher.AEAD, error) {
 	subkey := make([]byte, a.KeySize())
-	_ = shadowsocksx.HKDF_SHA1(key, salt, []byte("ss-subkey"), subkey)
+	_ = shadowsocksx.HkdfSha1(key, salt, []byte("ss-subkey"), subkey)
 	blk, err := aes.NewCipher(subkey)
 	if err != nil {
 		return nil, err

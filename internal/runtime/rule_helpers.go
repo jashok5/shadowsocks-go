@@ -37,7 +37,7 @@ func blockedIP(ip string, forbidden string) bool {
 	if strings.TrimSpace(forbidden) == "" {
 		return false
 	}
-	for _, v := range strings.Split(forbidden, ",") {
+	for v := range strings.SplitSeq(forbidden, ",") {
 		if strings.TrimSpace(v) == ip {
 			return true
 		}
@@ -49,7 +49,7 @@ func blockedPort(port int, forbidden string) bool {
 	if strings.TrimSpace(forbidden) == "" {
 		return false
 	}
-	for _, item := range strings.Split(forbidden, ",") {
+	for item := range strings.SplitSeq(forbidden, ",") {
 		item = strings.TrimSpace(item)
 		if item == "" {
 			continue

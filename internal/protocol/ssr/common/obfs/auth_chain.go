@@ -5,12 +5,13 @@ import (
 	"encoding/base64"
 	"encoding/hex"
 	"fmt"
-	"github.com/jashok5/shadowsocks-go/internal/protocol/ssr/core"
-	"github.com/jashok5/shadowsocks-go/internal/protocol/ssr/utils/langx"
 	"math"
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/jashok5/shadowsocks-go/internal/protocol/ssr/core"
+	"github.com/jashok5/shadowsocks-go/internal/protocol/ssr/utils/langx"
 
 	"github.com/jashok5/shadowsocks-go/internal/protocol/ssr/common/ciphers"
 	"github.com/jashok5/shadowsocks-go/internal/protocol/ssr/utils/bytesx"
@@ -23,8 +24,8 @@ import (
 )
 
 const (
-	MAX_INT  = (1 << 64) - 1
-	MOV_MASK = (1 << (64 - 23)) - 1
+	MaxInt  = (1 << 64) - 1
+	MovMask = (1 << (64 - 23)) - 1
 )
 
 func init() {
@@ -47,10 +48,10 @@ func (xs1p *XorShift128Plus) Next() uint64 {
 	x := xs1p.V0
 	y := xs1p.V1
 	xs1p.V0 = y
-	x ^= ((x & MOV_MASK) << 23)
-	x ^= (y ^ (x >> 17) ^ (y >> 26))
+	x ^= (x & MovMask) << 23
+	x ^= y ^ (x >> 17) ^ (y >> 26)
 	xs1p.V1 = x
-	return (x + y) & MAX_INT
+	return (x + y) & MaxInt
 }
 
 func (xs1p *XorShift128Plus) InitFromBin(bin []byte) {
@@ -67,12 +68,11 @@ func (xs1p *XorShift128Plus) InitFromBinLen(bin []byte, length int) {
 	}
 	xs1p.V0 = binaryx.LEBytesToUint64(conbineToBytes(binaryx.LEUInt16ToBytes(uint16(length)), bin[2:8]))
 	xs1p.V1 = binaryx.LEBytesToUint64(bin[8:16])
-	for i := 0; i < 4; i++ {
+	for range 4 {
 		xs1p.Next()
 	}
 }
 
-/*----------------------------------AuthChainA----------------------------------*/
 type AuthChainA struct {
 	*AuthBase
 	RecvBuf        []byte
@@ -125,7 +125,7 @@ func NewAuthChainA(method string) (Plain, error) {
 	}, nil
 }
 
-func (a *AuthChainA) GetOverhead(direction bool) int {
+func (a *AuthChainA) GetOverhead(bool) int {
 	return a.Overhead
 }
 
@@ -220,11 +220,7 @@ func (a *AuthChainA) ServerPreEncrypt(buf []byte) (result []byte, err error) {
 	result = []byte{}
 	if a.PackID == 1 {
 		var tcpMass int
-		if a.GetServerInfo().GetTCPMss() < 1500 {
-			tcpMass = a.GetServerInfo().GetTCPMss()
-		} else {
-			tcpMass = 1500
-		}
+		tcpMass = min(a.GetServerInfo().GetTCPMss(), 1500)
 		a.GetServerInfo().SetTCPMss(tcpMass)
 		buf = bytesx.ContactSlice(binaryx.LEUInt16ToBytes(uint16(tcpMass)), buf)
 		a.UnintLen = tcpMass - a.ClientOverhead
@@ -357,6 +353,9 @@ func (a *AuthChainA) ServerPostDecrypt(buf []byte) (result []byte, sendback bool
 				),
 			),
 		)
+		if err != nil {
+			return nil, false, err
+		}
 		a.RecvBuf = a.RecvBuf[36:]
 		a.HasRecvHeader = true
 		sendback = true
@@ -373,9 +372,9 @@ func (a *AuthChainA) ServerPostDecrypt(buf []byte) (result []byte, sendback bool
 			if a.RecvID == 1 {
 				log.Info("%s: over size ", a.NoCompatibleMethod)
 				return bytes.Repeat([]byte{byte('E')}, 2048), false, nil
-			} else {
-				return nil, false, errors.WithStack(errors.New("server_post_decrype data error"))
 			}
+
+			return nil, false, errors.WithStack(errors.New("server_post_decrype data error"))
 		}
 		if length+4 > len(a.RecvBuf) {
 			break
@@ -388,9 +387,9 @@ func (a *AuthChainA) ServerPostDecrypt(buf []byte) (result []byte, sendback bool
 			a.RecvBuf = []byte{}
 			if a.RecvID == 1 {
 				return bytes.Repeat([]byte{byte('E')}, 2048), false, nil
-			} else {
-				return nil, false, errors.WithStack(errors.New("server_post_decrype data uncorrect checksum"))
 			}
+
+			return nil, false, errors.WithStack(errors.New("server_post_decrype data uncorrect checksum"))
 		}
 		a.RecvID = (a.RecvID + 1) & 0xFFFFFFFF
 		pos := 2
@@ -427,7 +426,7 @@ func (a *AuthChainA) ClientUDPPreEncrypt(buf []byte) ([]byte, error) {
 				if err != nil {
 					return nil, err
 				}
-				uidPack := binaryx.LEUint32ToBytes(uint32((uidInt)))
+				uidPack := binaryx.LEUint32ToBytes(uint32(uidInt))
 				a.UserID = uidPack
 			}
 
@@ -464,7 +463,7 @@ func (a *AuthChainA) ClientUDPPostDecrypt(buf []byte) ([]byte, error) {
 	if len(buf) < 8 {
 		return []byte{}, nil
 	}
-	if bytes.Equal(hmacmd5(a.UserKey, buf[:len(buf)])[:1], buf[len(buf)-1:]) {
+	if bytes.Equal(hmacmd5(a.UserKey, buf[:])[:1], buf[len(buf)-1:]) {
 		return []byte{}, nil
 	}
 	macKey := a.GetServerInfo().GetKey()
@@ -530,7 +529,7 @@ func (a *AuthChainA) ServerUDPPostDecrypt(buf []byte) ([]byte, string, error) {
 			userKey = a.GetServerInfo().GetRecvIv()
 		}
 	}
-	if bytes.Equal(hmacmd5(userKey, buf[:len(buf)])[:1], buf[len(buf)-1:]) {
+	if bytes.Equal(hmacmd5(userKey, buf[:])[:1], buf[len(buf)-1:]) {
 		return []byte{}, "", nil
 	}
 	randLen := a.udpRndDataLen(md5Data, a.RandomServer)
@@ -554,20 +553,6 @@ func (a *AuthChainA) ServerUDPPostDecrypt(buf []byte) ([]byte, string, error) {
 
 func (a *AuthChainA) Dispose() {
 	core.GetApp().GetObfsProtocolService().Remove(string(a.UserID), a.ClientID)
-}
-
-func (a *AuthChainA) trapezoidRandomFloat(d float64) float64 {
-	if d == 0 {
-		return randomx.Float64()
-	}
-	s := randomx.Float64()
-	tmp := 1 - d
-	return (math.Sqrt(tmp*tmp+4*d*s) - tmp) / (2 * d)
-}
-
-func (a *AuthChainA) trapezoidRandomInt(maxVal, d float64) int {
-	v := a.trapezoidRandomFloat(d)
-	return int(v * maxVal)
 }
 
 func (a *AuthChainA) rndDataLen(bufSize int, lastHash []byte, random *XorShift128Plus) int {
@@ -604,14 +589,14 @@ func (a *AuthChainA) rndData(bufSize int, buf []byte, lastHashe []byte, random *
 	rndDataBuf := randomx.RandomBytes(randLen)
 	if bufSize == 0 {
 		return rndDataBuf
-	} else {
-		if randLen > 0 {
-			startPos := a.rndStartPos(randLen, random)
-			return conbineToBytes(rndDataBuf[:startPos], buf, rndDataBuf[startPos:])
-		} else {
-			return buf
-		}
 	}
+
+	if randLen > 0 {
+		startPos := a.rndStartPos(randLen, random)
+		return conbineToBytes(rndDataBuf[:startPos], buf, rndDataBuf[startPos:])
+	}
+
+	return buf
 }
 
 func (a *AuthChainA) packClientData(buf []byte) ([]byte, error) {
@@ -620,7 +605,7 @@ func (a *AuthChainA) packClientData(buf []byte) ([]byte, error) {
 		return nil, err
 	}
 	data := a.rndData(len(buf), buf, a.LastClientHash, a.RandomClient)
-	macKey := bytesx.ContactSlice(a.UserKey, binaryx.BEUInt32ToBytes(uint32((a.PackID))))
+	macKey := bytesx.ContactSlice(a.UserKey, binaryx.BEUInt32ToBytes(uint32(a.PackID)))
 	length := len(buf) ^ int(binaryx.LEBytesToUint16(a.LastClientHash[14:]))
 	data = bytesx.ContactSlice(binaryx.LEUInt16ToBytes(uint16(length)), data)
 	a.LastClientHash = hmacmd5(macKey, data)
@@ -663,7 +648,7 @@ func (a *AuthChainA) packAuthData(authData, buf []byte) (result []byte, err erro
 			if err != nil {
 				return nil, err
 			}
-			uidPack = binaryx.LEUint32ToBytes(uint32((uidInt)))
+			uidPack = binaryx.LEUint32ToBytes(uint32(uidInt))
 		} else {
 			uidPack = randomx.RandomBytes(4)
 		}
@@ -683,7 +668,7 @@ func (a *AuthChainA) packAuthData(authData, buf []byte) (result []byte, err erro
 	}
 
 	uid := binaryx.LEBytesToUInt32([]byte{uidPack[0], uidPack[1], 0x00, 0x00}) ^ binaryx.LEBytesToUInt32(a.LastClientHash[8:12])
-	uidPack = binaryx.LEUint32ToBytes(uint32(uid))
+	uidPack = binaryx.LEUint32ToBytes(uid)
 	dataCipherText, err := encryptor.Encrypt(data)
 	if err != nil {
 		return nil, err

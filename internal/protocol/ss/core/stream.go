@@ -1,6 +1,9 @@
 package core
 
-import "net"
+import (
+	"errors"
+	"net"
+)
 
 type listener struct {
 	net.Listener
@@ -9,15 +12,21 @@ type listener struct {
 
 func Listen(network, address string, ciph StreamConnCipher) (net.Listener, error) {
 	l, err := net.Listen(network, address)
-	return &listener{l, ciph}, err
+	if err != nil {
+		return nil, err
+	}
+	return &listener{l, ciph}, nil
 }
 
 func (l *listener) Accept() (net.Conn, error) {
 	c, err := l.Listener.Accept()
-	return l.StreamConn(c), err
-}
-
-func Dial(network, address string, ciph StreamConnCipher) (net.Conn, error) {
-	c, err := net.Dial(network, address)
-	return ciph.StreamConn(c), err
+	if err != nil {
+		return nil, err
+	}
+	wrapped := l.StreamConn(c)
+	if wrapped == nil {
+		_ = c.Close()
+		return nil, errors.New("stream cipher returned nil Conn")
+	}
+	return wrapped, nil
 }

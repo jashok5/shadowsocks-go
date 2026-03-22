@@ -292,10 +292,7 @@ func (c *Client) doWithRetry(ctx context.Context, fn func(context.Context) error
 			}
 			break
 		}
-		wait := backoff * time.Duration(1<<(attempt-1))
-		if wait > maxBackoff {
-			wait = maxBackoff
-		}
+		wait := min(backoff*time.Duration(1<<(attempt-1)), maxBackoff)
 		log.Debug("api call retrying", zap.Int("attempt", attempt), zap.Duration("wait", wait), zap.Error(err))
 		t := time.NewTimer(wait)
 		select {

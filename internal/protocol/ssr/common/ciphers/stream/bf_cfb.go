@@ -7,28 +7,28 @@ import (
 )
 
 func init() {
-	registerStreamCiphers("bf-cfb", &bf_cfb{16, 8})
+	registerStreamCiphers("bf-cfb", &bfCfb{16, 8})
 }
 
-type bf_cfb struct {
+type bfCfb struct {
 	keyLen int
 	ivLen  int
 }
 
-func (a *bf_cfb) KeyLen() int {
+func (a *bfCfb) KeyLen() int {
 	return a.keyLen
 }
-func (a *bf_cfb) IVLen() int {
+func (a *bfCfb) IVLen() int {
 	return a.ivLen
 }
-func (a *bf_cfb) NewStream(key, iv []byte, decryptOrEncrypt int) (cipher.Stream, error) {
+func (a *bfCfb) NewStream(key, iv []byte, decryptOrEncrypt int) (cipher.Stream, error) {
 	block, err := blowfish.NewCipher(key)
 	if err != nil {
 		return nil, err
 	}
 	if decryptOrEncrypt == 0 {
 		return cipher.NewCFBEncrypter(block, iv), nil
-	} else {
-		return cipher.NewCFBDecrypter(block, iv), nil
 	}
+
+	return cipher.NewCFBDecrypter(block, iv), nil
 }

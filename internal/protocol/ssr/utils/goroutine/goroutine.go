@@ -1,8 +1,9 @@
 package goroutine
 
 import (
-	"github.com/sirupsen/logrus"
 	"runtime/debug"
+
+	"github.com/sirupsen/logrus"
 )
 
 func Protect(g func()) {

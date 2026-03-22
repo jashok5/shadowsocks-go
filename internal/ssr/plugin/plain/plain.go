@@ -6,8 +6,6 @@ type Protocol struct {
 	serverInfo pipeline.ServerInfo
 }
 
-func NewProtocol() *Protocol { return &Protocol{} }
-
 func (p *Protocol) Name() string { return "origin" }
 
 func (p *Protocol) SetServerInfo(si pipeline.ServerInfo) { p.serverInfo = si }
@@ -27,8 +25,6 @@ func (p *Protocol) ServerUDPPostDecrypt(b []byte) ([]byte, int, error) { return 
 type Obfs struct {
 	serverInfo pipeline.ServerInfo
 }
-
-func NewObfs() *Obfs { return &Obfs{} }
 
 func (o *Obfs) Name() string { return "plain" }
 

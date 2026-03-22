@@ -7,19 +7,20 @@ import (
 	"crypto/sha1"
 	"encoding/binary"
 	"encoding/hex"
-	"github.com/jashok5/shadowsocks-go/internal/protocol/ssr/utils/binaryx"
-	"github.com/jashok5/shadowsocks-go/internal/protocol/ssr/utils/bytesx"
-	"github.com/jashok5/shadowsocks-go/internal/protocol/ssr/utils/randomx"
 	"hash"
 	"math"
 	"sync"
 	"time"
 
+	"github.com/jashok5/shadowsocks-go/internal/protocol/ssr/utils/binaryx"
+	"github.com/jashok5/shadowsocks-go/internal/protocol/ssr/utils/bytesx"
+	"github.com/jashok5/shadowsocks-go/internal/protocol/ssr/utils/randomx"
+
 	"github.com/jashok5/shadowsocks-go/internal/protocol/ssr/common/cache"
 	"github.com/jashok5/shadowsocks-go/internal/protocol/ssr/common/log"
 )
 
-func conbineToBytes(data ...interface{}) []byte {
+func conbineToBytes(data ...any) []byte {
 	buf := new(bytes.Buffer)
 	for _, item := range data {
 		binary.Write(buf, binary.BigEndian, item)
@@ -70,7 +71,6 @@ func matchBegin(str1, str2 []byte) bool {
 	return false
 }
 
-/* ---------------------------- AuthBase ---------------------------- */
 type AuthBase struct {
 	Plain
 	Method             string
@@ -91,7 +91,7 @@ func NewAuthBase(method string) (*AuthBase, error) {
 	}, nil
 }
 
-func (authBase *AuthBase) GetOverhead(direction bool) int {
+func (authBase *AuthBase) GetOverhead(bool) int {
 	return authBase.Overhead
 }
 
@@ -191,7 +191,7 @@ func (c *ClientQueue) Insert(connectionID int) bool {
 
 /* ---------------------------- ObfsAuthChainData ---------------------------- */
 
-type ObfsAuthChainData struct {
+type AuthChainData struct {
 	Name          string
 	UserID        map[string]*cache.LRU
 	LocalClientId []byte
@@ -200,8 +200,8 @@ type ObfsAuthChainData struct {
 	MaxBuffer     int
 }
 
-func NewObfsAuthChainData(name string) *ObfsAuthChainData {
-	result := &ObfsAuthChainData{
+func NewObfsAuthChainData(name string) *AuthChainData {
+	result := &AuthChainData{
 		Name:          name,
 		UserID:        make(map[string]*cache.LRU),
 		LocalClientId: []byte{},
@@ -211,7 +211,7 @@ func NewObfsAuthChainData(name string) *ObfsAuthChainData {
 	return result
 }
 
-func (o *ObfsAuthChainData) Update(userID []byte, clientID, connectionID int) {
+func (o *AuthChainData) Update(userID []byte, clientID, _ int) {
 	if o.UserID[string(userID)] == nil {
 		o.UserID[string(userID)] = cache.NewLruCache(60 * time.Second)
 	}
@@ -225,12 +225,12 @@ func (o *ObfsAuthChainData) Update(userID []byte, clientID, connectionID int) {
 	}
 }
 
-func (o *ObfsAuthChainData) SetMaxClient(maxClient int) {
+func (o *AuthChainData) SetMaxClient(maxClient int) {
 	o.MaxClient = maxClient
 	o.MaxBuffer = int(math.Max(float64(maxClient), 1024))
 }
 
-func (o *ObfsAuthChainData) Insert(userID []byte, clientID, connectionID int) bool {
+func (o *AuthChainData) Insert(userID []byte, clientID, connectionID int) bool {
 	if o.UserID[string(userID)] == nil {
 		o.UserID[string(userID)] = cache.NewLruCache(60 * time.Second)
 	}
@@ -262,13 +262,13 @@ func (o *ObfsAuthChainData) Insert(userID []byte, clientID, connectionID int) bo
 
 		log.Warn("uid: %d, clientId: %d - %s: no inactive client", binaryx.LEBytesToUInt32(userID), clientID, o.Name)
 		return false
-	} else {
-		return localClientID.Get(clientID).(*ClientQueue).Insert(connectionID)
 	}
+
+	return localClientID.Get(clientID).(*ClientQueue).Insert(connectionID)
 }
 
-func (o *ObfsAuthChainData) Remove(userID string, clientID int) {
-	localClientID := o.UserID[string(userID)]
+func (o *AuthChainData) Remove(userID string, clientID int) {
+	localClientID := o.UserID[userID]
 	if localClientID != nil {
 		if localClientID.IsExist(clientID) {
 			localClientID.Get(clientID).(*ClientQueue).DelRef()
@@ -276,7 +276,7 @@ func (o *ObfsAuthChainData) Remove(userID string, clientID int) {
 	}
 }
 
-func (o *ObfsAuthChainData) AuthData() []byte {
+func (o *AuthChainData) AuthData() []byte {
 	utcTime := uint32(time.Now().Unix() & 0xFFFFFFFF)
 	if o.ConnectionID > 0xFF000000 {
 		o.LocalClientId = []byte{}
@@ -288,24 +288,24 @@ func (o *ObfsAuthChainData) AuthData() []byte {
 	}
 	o.ConnectionID++
 	return bytesx.ContactSlice(
-		binaryx.LEUint32ToBytes(uint32(utcTime)),
+		binaryx.LEUint32ToBytes(utcTime),
 		o.LocalClientId,
 		binaryx.LEUint32ToBytes(uint32(o.ConnectionID)),
 	)
 }
 
-func (o *ObfsAuthChainData) GetConnectionID() int {
+func (o *AuthChainData) GetConnectionID() int {
 	return o.ConnectionID
 }
 
-func (o *ObfsAuthChainData) SetConnectionID(connectionID int) {
+func (o *AuthChainData) SetConnectionID(connectionID int) {
 	o.ConnectionID = connectionID
 }
 
-func (o *ObfsAuthChainData) SetClientID(clientID []byte) {
+func (o *AuthChainData) SetClientID(clientID []byte) {
 	o.LocalClientId = clientID
 }
 
-func (o *ObfsAuthChainData) GetClientID() []byte {
+func (o *AuthChainData) GetClientID() []byte {
 	return o.LocalClientId
 }

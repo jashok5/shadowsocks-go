@@ -5,7 +5,7 @@ import (
 	"encoding/hex"
 	"fmt"
 	"io"
-	"io/ioutil"
+
 	"net"
 	"net/http"
 	"runtime/debug"
@@ -121,9 +121,9 @@ func (ssr *ShadowsocksRProxy) StartTCP() error {
 					Proto:         "HTTP/1.1",
 					ProtoMajor:    1,
 					ProtoMinor:    1,
-					Body:          ioutil.NopCloser(bytes.NewBufferString(body)),
+					Body:          io.NopCloser(bytes.NewBufferString(body)),
 					ContentLength: int64(len(body)),
-					Header:        make(http.Header, 0),
+					Header:        make(http.Header),
 				}
 				_ = t.Write(ssrd)
 				return
@@ -205,6 +205,7 @@ func (ssr *ShadowsocksRProxy) StartUDP() error {
 				}).Info("recive udp proxy")
 				data = data[len(remoteAddr.Raw):]
 				remotePacketConn := udpMap.Get(addr.String())
+				newPacketConn := false
 				if remotePacketConn == nil {
 					remotePacketConn = &ShadowsocksRUDPMapItem{}
 					remotePacketConn.Uid = uid
@@ -219,10 +220,16 @@ func (ssr *ShadowsocksRProxy) StartUDP() error {
 						}).Error("shadowoscksr listenPacket udp error")
 						continue
 					}
+					newPacketConn = true
 					udpMap.Add(addr, ssrd, remotePacketConn)
 				}
 				remoteAddrResolve, err := net.ResolveUDPAddr("udp", remoteAddr.String())
 				if err != nil {
+					if newPacketConn {
+						if pc := udpMap.Del(addr.String()); pc != nil {
+							_ = pc.Close()
+						}
+					}
 					logrus.WithFields(logrus.Fields{
 						"remoteAddr": remoteAddr.String(),
 						"serverAddr": ssrd.PacketConn.LocalAddr().String(),
@@ -301,7 +308,6 @@ type ShadowsocksRUDPMapItem struct {
 	Uid []byte
 }
 
-// Packet NAT table
 type ShadowsocksRUDPMap struct {
 	sync.RWMutex
 	m       map[string]*ShadowsocksRUDPMapItem
@@ -350,7 +356,6 @@ func (m *ShadowsocksRUDPMap) Add(client net.Addr, server *network.ShadowsocksRDe
 	})
 }
 
-// copy from src to dst at target with read timeout
 func ShadowsocksRMapTimeCopy(dst *network.ShadowsocksRDecorate, target net.Addr, src *ShadowsocksRUDPMapItem, timeout time.Duration) error {
 	buf := pool.GetBuf()
 	defer pool.PutBuf(buf)

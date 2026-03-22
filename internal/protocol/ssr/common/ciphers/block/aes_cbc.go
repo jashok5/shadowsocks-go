@@ -6,28 +6,27 @@ import (
 )
 
 func init() {
-	registerBlockCiphers("aes-128-cbc", &aes_cbc{16, 16})
+	registerBlockCiphers("aes-128-cbc", &aesCbc{16, 16})
 }
 
-type aes_cbc struct {
+type aesCbc struct {
 	keyLen int
 	ivLen  int
 }
 
-func (a *aes_cbc) KeyLen() int {
+func (a *aesCbc) KeyLen() int {
 	return a.keyLen
 }
-func (a *aes_cbc) IVLen() int {
+func (a *aesCbc) IVLen() int {
 	return a.ivLen
 }
-func (a *aes_cbc) NewBlock(key, iv []byte, decryptOrEncrypt int) (cipher.BlockMode, error) {
+func (a *aesCbc) NewBlock(key, iv []byte, decryptOrEncrypt int) (cipher.BlockMode, error) {
 	block, err := aes.NewCipher(key)
 	if err != nil {
 		return nil, err
 	}
 	if decryptOrEncrypt == 0 {
 		return cipher.NewCBCEncrypter(block, iv), nil
-	} else {
-		return cipher.NewCBCDecrypter(block, iv), nil
 	}
+	return cipher.NewCBCDecrypter(block, iv), nil
 }

@@ -2,6 +2,7 @@ package runtime
 
 import (
 	"context"
+	"maps"
 	"sync"
 
 	"github.com/jashok5/shadowsocks-go/internal/model"
@@ -71,13 +72,9 @@ func (d *MockDriver) Snapshot(_ context.Context) (DriverSnapshot, error) {
 	defer d.mu.RUnlock()
 
 	transfer := make(map[int]model.PortTransfer, len(d.transfer))
-	for k, v := range d.transfer {
-		transfer[k] = v
-	}
+	maps.Copy(transfer, d.transfer)
 	userTransfer := make(map[int]model.PortTransfer, len(d.userTransfer))
-	for k, v := range d.userTransfer {
-		userTransfer[k] = v
-	}
+	maps.Copy(userTransfer, d.userTransfer)
 	onlineIP := make(map[int][]string, len(d.onlineIP))
 	for k, v := range d.onlineIP {
 		cp := make([]string, len(v))

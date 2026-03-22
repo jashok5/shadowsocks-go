@@ -7,26 +7,18 @@ import (
 	"sync"
 )
 
-// Those suggest value are all set according to
-// https://github.com/shadowsocks/shadowsocks-org/issues/44#issuecomment-281021054
-// Due to this package contains various internal implementation so const named with DefaultBR prefix
 const (
 	DefaultSFCapacity = 1e6
-	// FalsePositiveRate
-	DefaultSFFPR  = 1e-6
-	DefaultSFSlot = 10
+	DefaultSFFPR      = 1e-6
+	DefaultSFSlot     = 10
 )
 
 const EnvironmentPrefix = "SHADOWSOCKS_"
 
-// A shared instance used for checking salt repeat
 var saltfilter *BloomRing
 
-// Used to initialize the saltfilter singleton only once.
 var initSaltfilterOnce sync.Once
 
-// GetSaltFilterSingleton returns the BloomRing singleton,
-// initializing it on first call.
 func getSaltFilterSingleton() *BloomRing {
 	initSaltfilterOnce.Do(func() {
 		var (
@@ -61,7 +53,6 @@ func getSaltFilterSingleton() *BloomRing {
 				*opt.Target = p
 			}
 		}
-		// Support disable saltfilter by given a negative capacity
 		if finalCapacity <= 0 {
 			return
 		}
@@ -70,12 +61,6 @@ func getSaltFilterSingleton() *BloomRing {
 	return saltfilter
 }
 
-// TestSalt returns true if salt is repeated
-func TestSalt(b []byte) bool {
-	return getSaltFilterSingleton().Test(b)
-}
-
-// AddSalt salt to filter
 func AddSalt(b []byte) {
 	getSaltFilterSingleton().Add(b)
 }

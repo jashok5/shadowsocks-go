@@ -3,11 +3,9 @@ package obfs
 import "net"
 
 const (
-	NETWORK_MTU      = 1500
-	TCP_MSS          = 1460
-	BUF_SIZE         = 32 * 1024
-	UDP_MAX_BUF_SIZE = 65536
-	DEFAULT_HEAD_LEN = 30
+	TcpMss         = 1460
+	BufSize        = 32 * 1024
+	DefaultHeadLen = 30
 )
 
 type ServerInfo interface {
@@ -64,11 +62,10 @@ type serverInfo struct {
 	updateUser    func(uid []byte)
 }
 
-// InitServerInfo init ServerInfo default value
 func NewServerInfo() ServerInfo {
 	return &serverInfo{
-		TCPMss:  TCP_MSS,
-		HeadLen: DEFAULT_HEAD_LEN,
+		TCPMss:  TcpMss,
+		HeadLen: DefaultHeadLen,
 		Users:   make(map[string]string),
 	}
 }

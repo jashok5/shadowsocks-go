@@ -128,7 +128,7 @@ func TestMemoryManagerUnsupportedCipherFail(t *testing.T) {
 		Users: []model.User{
 			{ID: 1, Port: 1001, Method: "rc4-md5", Passwd: "p"},
 		},
-		Runtime: RuntimeOptions{OnUnsupportedCipher: "fail"},
+		Runtime: Options{OnUnsupportedCipher: "fail"},
 	})
 	if err == nil {
 		t.Fatalf("expected error on unsupported cipher with fail mode")

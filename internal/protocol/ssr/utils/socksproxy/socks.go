@@ -1,4 +1,3 @@
-// Package socksproxy implements essential parts of SOCKS protocol.
 package socksproxy
 
 import (
@@ -12,47 +11,24 @@ import (
 	"github.com/pkg/errors"
 )
 
-// UDPEnabled is the toggle for UDP support
-var UDPEnabled = true
-
-// SOCKS request commands as defined in RFC 1928 section 4.
-const (
-	CmdConnect      = 1
-	CmdBind         = 2
-	CmdUDPAssociate = 3
-)
-
-// SOCKS address types as defined in RFC 1928 section 5.
 const (
 	AtypIPv4       = 1
 	AtypDomainName = 3
 	AtypIPv6       = 4
 )
 
-// Error represents a SOCKS error
 type Error string
 
 func (err Error) Error() string {
 	return "SOCKS error: " + string(err)
 }
 
-// SOCKS errors as defined in RFC 1928 section 6.
 const (
-	ErrGeneralFailure       = Error("ErrGeneralFailure")
-	ErrConnectionNotAllowed = Error("ErrConnectionNotAllowed")
-	ErrNetworkUnreachable   = Error("ErrNetworkUnreachable")
-	ErrHostUnreachable      = Error("ErrHostUnreachable")
-	ErrConnectionRefused    = Error("ErrConnectionRefused")
-	ErrTTLExpired           = Error("ErrTTLExpired")
-	ErrCommandNotSupported  = Error("ErrCommandNotSupported")
-	ErrAddressNotSupported  = Error("ErrAddressNotSupported")
-	InfoUDPAssociate        = Error("InfoUDPAssociate")
+	ErrAddressNotSupported = Error("ErrAddressNotSupported")
 )
 
-// MaxAddrLen is the maximum size of SOCKS address in bytes.
 const MaxAddrLen = 1 + 1 + 255 + 2
 
-// Socks5Addr represents a SOCKS address as defined in RFC 1928 section 5.
 type Socks5Addr struct {
 	Raw     []byte
 	AType   int
@@ -69,40 +45,30 @@ func NewSocks5Addr(raw []byte, atype int) *Socks5Addr {
 	return addr
 }
 
-func NewSSProtocol(atype, port int, address string) *Socks5Addr {
-	ss := &Socks5Addr{
-		AType:   atype,
-		Port:    port,
-		Address: address,
-	}
-	ss.GetRaw()
-	return ss
-}
-
 func (ss *Socks5Addr) GetRaw() (raw []byte, err error) {
 	if ss.Raw != nil {
 		return ss.Raw, nil
 	}
 
 	buf := new(bytes.Buffer)
-	var data []interface{}
+	var data []any
 	switch ss.AType {
 	case AtypDomainName:
 		domainLen := len(ss.Address)
-		data = []interface{}{
+		data = []any{
 			uint8(ss.AType),
 			uint8(domainLen),
 			[]byte(ss.Address),
 			uint16(ss.Port),
 		}
 	case AtypIPv4:
-		data = []interface{}{
+		data = []any{
 			uint8(ss.AType),
 			[]byte(net.ParseIP(ss.Address).To4()),
 			uint16(ss.Port),
 		}
 	case AtypIPv6:
-		data = []interface{}{
+		data = []any{
 			uint8(ss.AType),
 			[]byte(net.ParseIP(ss.Address).To16()),
 			uint16(ss.Port),
@@ -128,34 +94,34 @@ func (ss *Socks5Addr) MustGetRaw() []byte {
 	return raw
 }
 
-func (s *Socks5Addr) GetAddress() string {
-	return s.Address
+func (ss *Socks5Addr) GetAddress() string {
+	return ss.Address
 }
 
-func (s *Socks5Addr) GetPort() int {
-	return s.Port
+func (ss *Socks5Addr) GetPort() int {
+	return ss.Port
 }
 
-func (s *Socks5Addr) GetAType() int {
-	return s.AType
+func (ss *Socks5Addr) GetAType() int {
+	return ss.AType
 }
 
-func (s *Socks5Addr) process() {
-	switch s.AType { // address type
+func (ss *Socks5Addr) process() {
+	switch ss.AType { // address type
 	case AtypDomainName:
-		s.Address = string(s.Raw[2 : 2+int(s.Raw[1])])
-		s.Port = (int(s.Raw[2+int(s.Raw[1])]) << 8) | int(s.Raw[2+int(s.Raw[1])+1])
+		ss.Address = string(ss.Raw[2 : 2+int(ss.Raw[1])])
+		ss.Port = (int(ss.Raw[2+int(ss.Raw[1])]) << 8) | int(ss.Raw[2+int(ss.Raw[1])+1])
 	case AtypIPv4:
-		s.Address = net.IP(s.Raw[1:1+net.IPv4len]).String()
-		s.Port = (int(s.Raw[1+net.IPv4len]) << 8) | int(s.Raw[1+net.IPv4len+1])
+		ss.Address = net.IP(ss.Raw[1 : 1+net.IPv4len]).String()
+		ss.Port = (int(ss.Raw[1+net.IPv4len]) << 8) | int(ss.Raw[1+net.IPv4len+1])
 	case AtypIPv6:
-		s.Address = net.IP(s.Raw[1:1+net.IPv6len]).String()
-		s.Port = (int(s.Raw[1+net.IPv6len]) << 8) | int(s.Raw[1+net.IPv6len+1])
+		ss.Address = net.IP(ss.Raw[1 : 1+net.IPv6len]).String()
+		ss.Port = (int(ss.Raw[1+net.IPv6len]) << 8) | int(ss.Raw[1+net.IPv6len+1])
 	}
 }
 
-func (s *Socks5Addr) String() string {
-	return fmt.Sprintf("%s:%v", s.Address, s.Port)
+func (ss *Socks5Addr) String() string {
+	return fmt.Sprintf("%s:%v", ss.Address, ss.Port)
 }
 
 func readAddr(r io.Reader, b []byte) (*Socks5Addr, error) {
@@ -186,12 +152,10 @@ func readAddr(r io.Reader, b []byte) (*Socks5Addr, error) {
 	return nil, ErrAddressNotSupported
 }
 
-// ReadAddr reads just enough bytes from r to get a valid Addr.
 func ReadAddr(r io.Reader) (*Socks5Addr, error) {
 	return readAddr(r, make([]byte, MaxAddrLen))
 }
 
-// SplitAddr slices a SOCKS address from beginning of b. Returns nil if failed.
 func SplitAddr(b []byte) (*Socks5Addr, error) {
 	addrLen := 1
 	if len(b) < addrLen {
@@ -224,7 +188,6 @@ func SplitAddr(b []byte) (*Socks5Addr, error) {
 	return NewSocks5Addr(b[:addrLen], atype), nil
 }
 
-// ParseAddr parses the address in string s. Returns nil if failed.
 func ParseAddr(s string) *Socks5Addr {
 	var (
 		addr  []byte

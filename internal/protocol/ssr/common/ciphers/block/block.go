@@ -14,10 +14,6 @@ func registerBlockCiphers(method string, c IBlockCipher) {
 	blockCiphers[method] = c
 }
 
-func GetBlockCiphers() map[string]IBlockCipher {
-	return blockCiphers
-}
-
 func GetBlockCipher(method string) IBlockCipher {
 	return blockCiphers[method]
 }

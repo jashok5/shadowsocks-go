@@ -13,7 +13,7 @@ type SyncInput struct {
 	Rules      []model.DetectRule
 	MUHost     MUHostRule
 	SwitchRule UserSwitchRule
-	Runtime    RuntimeOptions
+	Runtime    Options
 }
 
 type MUHostRule struct {
@@ -22,7 +22,7 @@ type MUHostRule struct {
 	Suffix  string
 }
 
-type RuntimeOptions struct {
+type Options struct {
 	OnUnsupportedCipher string
 	DialTimeout         time.Duration
 	DNSResolver         string

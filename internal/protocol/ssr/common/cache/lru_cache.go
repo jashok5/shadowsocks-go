@@ -18,11 +18,11 @@ type lrucache struct {
 
 type lruelement struct {
 	Expired time.Time
-	Payload interface{}
+	Payload any
 	TTL     time.Duration
 }
 
-func (l *lrucache) Put(key interface{}, payload interface{}) {
+func (l *lrucache) Put(key any, payload any) {
 	l.mapping.Store(key, &lruelement{
 		Payload: payload,
 		Expired: time.Now().Add(l.TTL),
@@ -30,7 +30,7 @@ func (l *lrucache) Put(key interface{}, payload interface{}) {
 	})
 }
 
-func (l *lrucache) Get(key interface{}) interface{} {
+func (l *lrucache) Get(key any) any {
 	item, exist := l.mapping.Load(key)
 	if !exist {
 		return nil
@@ -47,18 +47,18 @@ func (l *lrucache) Get(key interface{}) interface{} {
 	return elm.Payload
 }
 
-func (l *lrucache) Delete(key interface{}) {
+func (l *lrucache) Delete(key any) {
 	l.mapping.Delete(key)
 }
 
-func (l *lrucache) IsExist(key interface{}) bool {
+func (l *lrucache) IsExist(key any) bool {
 	_, exist := l.mapping.Load(key)
 	return exist
 }
 
-func (l *lrucache) First() interface{} {
-	var result interface{} = nil
-	l.mapping.Range(func(key, value interface{}) bool {
+func (l *lrucache) First() any {
+	var result any = nil
+	l.mapping.Range(func(key, value any) bool {
 		result = key
 		return false
 	})
@@ -66,8 +66,8 @@ func (l *lrucache) First() interface{} {
 }
 
 func (l *lrucache) Len() int {
-	var result int = 0
-	l.mapping.Range(func(key, valye interface{}) bool {
+	var result = 0
+	l.mapping.Range(func(key, valye any) bool {
 		result++
 		return true
 	})
@@ -75,7 +75,7 @@ func (l *lrucache) Len() int {
 }
 
 func (l *lrucache) Clean() {
-	l.mapping.Range(func(k, v interface{}) bool {
+	l.mapping.Range(func(k, v any) bool {
 		// key := k.(string)
 		elm := v.(*lruelement)
 		if time.Since(elm.Expired) > 0 {
@@ -88,6 +88,7 @@ func (l *lrucache) Clean() {
 type lruJanitor struct {
 	interval time.Duration
 	stop     chan struct{}
+	stopOnce sync.Once
 }
 
 func (j *lruJanitor) process(c *lrucache) {
@@ -103,11 +104,12 @@ func (j *lruJanitor) process(c *lrucache) {
 	}
 }
 
-func stopLruJanitor(c *LRU) {
-	c.lruJanitor.stop <- struct{}{}
+func (j *lruJanitor) Stop() {
+	j.stopOnce.Do(func() {
+		close(j.stop)
+	})
 }
 
-// New return *Cache
 func NewLruCache(interval time.Duration) *LRU {
 	j := &lruJanitor{
 		interval: interval,
@@ -119,7 +121,8 @@ func NewLruCache(interval time.Duration) *LRU {
 	}
 	go j.process(c)
 	lru := &LRU{c}
-	// this is very interesting,it worth be deep learning
-	runtime.SetFinalizer(lru, stopLruJanitor)
+	runtime.AddCleanup(lru, func(j *lruJanitor) {
+		j.Stop()
+	}, j)
 	return lru
 }

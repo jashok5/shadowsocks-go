@@ -2,8 +2,7 @@ package log
 
 import "github.com/sirupsen/logrus"
 
-// default use root logging
-func Debug(message string, params ...interface{}) {
+func Debug(message string, params ...any) {
 	if params != nil {
 		logrus.Debugf(message, params...)
 	} else {
@@ -11,8 +10,7 @@ func Debug(message string, params ...interface{}) {
 	}
 }
 
-// default use root logging
-func Info(message string, params ...interface{}) {
+func Info(message string, params ...any) {
 	if params != nil {
 		logrus.Infof(message, params...)
 	} else {
@@ -20,8 +18,7 @@ func Info(message string, params ...interface{}) {
 	}
 }
 
-// default use root logging
-func Warn(message string, params ...interface{}) {
+func Warn(message string, params ...any) {
 	if params != nil {
 		logrus.Warnf(message, params...)
 	} else {
@@ -29,16 +26,10 @@ func Warn(message string, params ...interface{}) {
 	}
 }
 
-// default use root logging
-func Error(message string, params ...interface{}) {
+func Error(message string, params ...any) {
 	if params != nil {
 		logrus.Errorf(message, params...)
 	} else {
 		logrus.Error(message)
 	}
-}
-
-// default use root logging
-func Err(err error) {
-	logrus.Errorf("%v", err)
 }

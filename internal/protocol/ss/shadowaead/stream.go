@@ -20,9 +20,6 @@ type writer struct {
 	buf   []byte
 }
 
-// NewWriter wraps an io.Writer with AEAD encryption.
-func NewWriter(w io.Writer, aead cipher.AEAD) io.Writer { return newWriter(w, aead) }
-
 func newWriter(w io.Writer, aead cipher.AEAD) *writer {
 	return &writer{
 		Writer: w,
@@ -32,15 +29,11 @@ func newWriter(w io.Writer, aead cipher.AEAD) *writer {
 	}
 }
 
-// Write encrypts b and writes to the embedded io.Writer.
 func (w *writer) Write(b []byte) (int, error) {
 	n, err := w.ReadFrom(bytes.NewBuffer(b))
 	return int(n), err
 }
 
-// ReadFrom reads from the given io.Reader until EOF or error, encrypts and
-// writes to the embedded io.Writer. Returns number of bytes read from r and
-// any error encountered.
 func (w *writer) ReadFrom(r io.Reader) (n int64, err error) {
 	for {
 		buf := w.buf
@@ -83,9 +76,6 @@ type reader struct {
 	buf      []byte
 	leftover []byte
 }
-
-// NewReader wraps an io.Reader with AEAD decryption.
-func NewReader(r io.Reader, aead cipher.AEAD) io.Reader { return newReader(r, aead) }
 
 func newReader(r io.Reader, aead cipher.AEAD) *reader {
 	return &reader{

@@ -3,13 +3,14 @@ package network
 import (
 	"context"
 	"errors"
-	"github.com/jashok5/shadowsocks-go/internal/protocol/ssr/common/log"
-	"github.com/jashok5/shadowsocks-go/internal/protocol/ssr/utils/addrx"
-	"github.com/sirupsen/logrus"
 	"net"
 	"runtime/debug"
 	"strings"
 	"time"
+
+	"github.com/jashok5/shadowsocks-go/internal/protocol/ssr/common/log"
+	"github.com/jashok5/shadowsocks-go/internal/protocol/ssr/utils/addrx"
+	"github.com/sirupsen/logrus"
 )
 
 func NewListener(addr string, timeout time.Duration) *Listener {

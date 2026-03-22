@@ -150,7 +150,7 @@ func (s *Service) refreshNodeWhitelist(ctx context.Context) error {
 			if !ok {
 				continue
 			}
-			for _, part := range strings.Split(strings.TrimSpace(fmt.Sprint(raw)), ",") {
+			for part := range strings.SplitSeq(strings.TrimSpace(fmt.Sprint(raw)), ",") {
 				if ip, ok := parseSingleIP(part); ok {
 					next[ip] = struct{}{}
 				}
@@ -188,7 +188,7 @@ func parseRowIPSet(rows []map[string]any, key string) map[netip.Addr]struct{} {
 		if !ok {
 			continue
 		}
-		for _, part := range strings.Split(fmt.Sprint(raw), ",") {
+		for part := range strings.SplitSeq(fmt.Sprint(raw), ",") {
 			if ip, ok := parseSingleIP(part); ok {
 				out[ip] = struct{}{}
 			}

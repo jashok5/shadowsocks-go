@@ -3,7 +3,7 @@ package main
 import "fmt"
 
 var (
-	version   = "v0.0.7"
+	version   = "v0.0.8"
 	commit    = "unknown"
 	buildTime = "unknown"
 )

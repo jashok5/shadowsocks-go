@@ -1,19 +1,20 @@
 package netx
 
 import (
+	"io"
+	"net"
+	"sync"
+	"time"
+
 	"github.com/jashok5/shadowsocks-go/internal/protocol/ssr/common/log"
 	"github.com/jashok5/shadowsocks-go/internal/protocol/ssr/common/network"
 	"github.com/jashok5/shadowsocks-go/internal/protocol/ssr/common/pool"
 	"github.com/jashok5/shadowsocks-go/internal/protocol/ssr/utils/goroutine"
 	"github.com/jashok5/shadowsocks-go/internal/protocol/ssr/utils/socksproxy"
 	"github.com/pkg/errors"
-	"io"
-	"net"
-	"sync"
-	"time"
 )
 
-func Copy(dst,src network.IRequest) (written int64, err error){
+func Copy(dst, src network.IRequest) (written int64, err error) {
 	buf := pool.GetBuf()
 	for {
 		nr, er := src.Read(buf)
@@ -35,22 +36,14 @@ func Copy(dst,src network.IRequest) (written int64, err error){
 			}
 		}
 		if er != nil {
-			//if er != io.EOF {
-			//	err = er
-			//}
-			//log.Error("%s is error ---------------------",dst.GetRequestId())
 			err = er
 			break
 		}
 	}
 	pool.PutBuf(buf)
-	//log.Debug("%s written %d err %v",dst.GetRequestId(),written,err)
 	return written, err
 }
-// DuplexCopyTcp will return 3 result
-// up means left connection to right connection transfer data count
-// down means right connection to left connections transfer data count
-// and the last result is error
+
 func DuplexCopyTcp(left, right network.IRequest) (up, down int64, err error) {
 	type res struct {
 		N   int64
@@ -76,26 +69,18 @@ func DuplexCopyTcp(left, right network.IRequest) (up, down int64, err error) {
 	rs := <-ch
 
 	if rs.Err != nil {
-		log.Error("netx copy %s <- %s : %s",right.RemoteAddr(),left.RemoteAddr(),rs.Err.Error())
+		log.Error("netx copy %s <- %s : %s", right.RemoteAddr(), left.RemoteAddr(), rs.Err.Error())
 	}
-	if err != nil{
-		log.Error("netx copy %s -> %s : %s",right.RemoteAddr(),left.RemoteAddr(),err.Error())
+	if err != nil {
+		log.Error("netx copy %s -> %s : %s", right.RemoteAddr(), left.RemoteAddr(), err.Error())
 	}
 	return up, rs.N, errors.Cause(err)
 }
 
-// Packet NAT table
 type NatMap struct {
 	sync.RWMutex
 	m       map[string]net.PacketConn
 	timeout time.Duration
-}
-
-func NewNatMap(timeout time.Duration) *NatMap {
-	m := &NatMap{}
-	m.m = make(map[string]net.PacketConn)
-	m.timeout = timeout
-	return m
 }
 
 func (m *NatMap) Get(key string) net.PacketConn {
@@ -160,4 +145,3 @@ func timedCopy(dst net.PacketConn, target net.Addr, src net.PacketConn, timeout 
 		}
 	}
 }
-

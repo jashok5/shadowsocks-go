@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"maps"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -272,7 +273,7 @@ func replaceBinaryLinux(currentPath string, newPath string) error {
 
 func parseChecksums(content string) map[string]string {
 	out := make(map[string]string)
-	for _, line := range strings.Split(content, "\n") {
+	for line := range strings.SplitSeq(content, "\n") {
 		line = strings.TrimSpace(line)
 		if line == "" {
 			continue
@@ -322,9 +323,9 @@ func parseVersion(raw string) (semver, error) {
 	v = strings.TrimPrefix(v, "v")
 	main := v
 	pre := ""
-	if idx := strings.IndexByte(v, '-'); idx >= 0 {
-		main = v[:idx]
-		pre = v[idx+1:]
+	if before, after, ok := strings.Cut(v, "-"); ok {
+		main = before
+		pre = after
 	}
 	parts := strings.Split(main, ".")
 	if len(parts) != 3 {
@@ -334,7 +335,7 @@ func parseVersion(raw string) (semver, error) {
 	if err != nil {
 		return semver{}, fmt.Errorf("invalid major: %w", err)
 	}
-	min, err := strconv.Atoi(parts[1])
+	atoi, err := strconv.Atoi(parts[1])
 	if err != nil {
 		return semver{}, fmt.Errorf("invalid minor: %w", err)
 	}
@@ -342,7 +343,7 @@ func parseVersion(raw string) (semver, error) {
 	if err != nil {
 		return semver{}, fmt.Errorf("invalid patch: %w", err)
 	}
-	return semver{major: maj, minor: min, patch: pat, pre: pre}, nil
+	return semver{major: maj, minor: atoi, patch: pat, pre: pre}, nil
 }
 
 func compareVersion(a semver, b semver) int {
@@ -386,7 +387,7 @@ func mergeConfigFile(currentPath string, newExamplePath string) error {
 	}
 
 	mode := os.FileMode(0o644)
-	overrideContent := []byte{}
+	var overrideContent []byte
 	if st, statErr := os.Stat(currentPath); statErr == nil {
 		mode = st.Mode().Perm()
 		b, readErr := os.ReadFile(currentPath)
@@ -462,9 +463,7 @@ func decodeYAMLMap(content []byte) (map[string]any, error) {
 
 func deepMergeMaps(base map[string]any, override map[string]any) map[string]any {
 	merged := make(map[string]any, len(base))
-	for k, v := range base {
-		merged[k] = v
-	}
+	maps.Copy(merged, base)
 	for k, v := range override {
 		baseMap, baseIsMap := merged[k].(map[string]any)
 		overrideMap, overrideIsMap := v.(map[string]any)

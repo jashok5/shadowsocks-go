@@ -13,7 +13,6 @@ import (
 	"time"
 
 	"github.com/jashok5/shadowsocks-go/internal/model"
-
 	"github.com/jashok5/shadowsocks-go/internal/protocol/ss/core"
 	"github.com/jashok5/shadowsocks-go/internal/protocol/ss/socks"
 	"go.uber.org/zap"
@@ -22,7 +21,6 @@ import (
 
 const (
 	udpBufSize           = 64 * 1024
-	dialTimeout          = 8 * time.Second
 	handshakeReadTimeout = 10 * time.Second
 	idleReadTimeout      = 30 * time.Second
 	maxTCPConnPerPort    = 1024
@@ -275,17 +273,13 @@ func (d *SSDriver) startPortLocked(ctx context.Context, cfg PortConfig) (*ssPort
 	}
 	rt.udpConn = udpPC
 
-	rt.wg.Add(1)
-	go func() {
-		defer rt.wg.Done()
+	rt.wg.Go(func() {
 		d.serveTCP(rt)
-	}()
+	})
 
-	rt.wg.Add(1)
-	go func() {
-		defer rt.wg.Done()
+	rt.wg.Go(func() {
 		d.serveUDP(rt)
-	}()
+	})
 
 	return rt, nil
 }
@@ -410,7 +404,7 @@ func (d *SSDriver) serveUDP(rt *ssPortRuntime) {
 			if errors.Is(err, net.ErrClosed) || rt.ctx.Err() != nil {
 				return
 			}
-			if ne, ok := err.(net.Error); ok && ne.Timeout() {
+			if ne, ok := errors.AsType[net.Error](err); ok && ne.Timeout() {
 				continue
 			}
 			continue
@@ -423,12 +417,10 @@ func (d *SSDriver) serveUDP(rt *ssPortRuntime) {
 		pkt := make([]byte, n)
 		copy(pkt, buf[:n])
 		raddrCopy := raddr
-		rt.wg.Add(1)
-		go func() {
-			defer rt.wg.Done()
+		rt.wg.Go(func() {
 			defer releaseToken(rt.udpSem)
 			d.processUDPPacket(rt, port, raddrCopy, pkt)
-		}()
+		})
 	}
 }
 
@@ -511,7 +503,7 @@ func relayCounted(ctx context.Context, upLimit, downLimit *rate.Limiter, port in
 				}
 			}
 			if err != nil {
-				if ne, ok := err.(net.Error); ok && ne.Timeout() {
+				if ne, ok := errors.AsType[net.Error](err); ok && ne.Timeout() {
 					select {
 					case <-ctx.Done():
 						return
@@ -539,7 +531,7 @@ func relayCounted(ctx context.Context, upLimit, downLimit *rate.Limiter, port in
 				if errors.Is(err, io.EOF) {
 					return
 				}
-				if ne, ok := err.(net.Error); ok && ne.Timeout() {
+				if ne, ok := errors.AsType[net.Error](err); ok && ne.Timeout() {
 					select {
 					case <-ctx.Done():
 						return

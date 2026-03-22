@@ -2,11 +2,10 @@ package pool
 
 import "sync"
 
-const UDP_MAX_PACKET_SIZE = 64 * 1204
 const BufferSize = 4096
 
 var (
-	poolMap map[int]*sync.Pool
+	poolMap    map[int]*sync.Pool
 	getBufLock *sync.Mutex
 )
 
@@ -29,50 +28,12 @@ func GetBuf() []byte {
 	return buf
 }
 
-func GetBufBySize(size int) []byte {
-	pool := poolMap[size]
-	if pool == nil {
-		poolMap[size] = &sync.Pool{
-			New: createAllocFunc(size),
-		}
-	}
-	buf := poolMap[size].Get().([]byte)
-	buf = buf[:cap(buf)]
-	return buf
-}
-
 func PutBuf(buf []byte) {
 	poolMap[cap(buf)].Put(buf)
 }
 
-func createAllocFunc(size int) func() interface{} {
-	return func() interface{} {
+func createAllocFunc(size int) func() any {
+	return func() any {
 		return make([]byte, size)
 	}
 }
-
-// type BytesPool struct {
-// 	Size int
-// 	*sync.Pool
-// }
-
-// func NewBytesPool(size int) *BytesPool {
-// 	return &BytesPool{
-// 		Size: size,
-// 		Pool: &sync.Pool{
-// 			New: func() interface{} {
-// 				return make([]byte, size)
-// 			},
-// 		},
-// 	}
-// }
-
-// func (this *BytesPool) Get() []byte {
-// 	buf := this.Pool.Get().([]byte)
-// 	buf = buf[:cap(buf)]
-// 	return buf
-// }
-
-// func (this *BytesPool) Put(buf []byte) {
-// 	this.Pool.Put(buf)
-// }

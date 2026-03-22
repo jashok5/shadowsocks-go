@@ -2,18 +2,14 @@ package arrayx
 
 import (
 	"reflect"
+	"slices"
 )
 
 func FindStringInArray(obj string, target []string) bool {
-	for _, item := range target {
-		if obj == item {
-			return true
-		}
-	}
-	return false
+	return slices.Contains(target, obj)
 }
 
-func In(obj interface{}, collections interface{}) bool {
+func In(obj any, collections any) bool {
 	refCollections := reflect.ValueOf(collections)
 	refObj := reflect.ValueOf(obj)
 	if refCollections.Kind() != reflect.Slice {
@@ -39,6 +35,8 @@ func In(obj interface{}, collections interface{}) bool {
 			if items.Uint() == refObj.Uint() {
 				return true
 			}
+		default:
+			return false
 		}
 	}
 
