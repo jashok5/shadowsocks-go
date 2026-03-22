@@ -93,10 +93,7 @@ func (s *Service) Run(ctx context.Context) error {
 		if err := s.syncOnce(ctx); err != nil {
 			s.log.Error("sync failed", logger.Err(err))
 			wait := s.failureWait()
-			s.log.Warn("enter failure backoff", zap.Duration("wait", wait))
-			if !sleepContext(ctx, wait) {
-				return ctx.Err()
-			}
+			s.log.Warn("sync failed, continue with fixed update interval", zap.Duration("suggested_backoff", wait), zap.Duration("next_sync_in", s.cfg.Sync.UpdateInterval))
 		} else {
 			atomic.StoreInt64(&s.failCount, 0)
 		}
