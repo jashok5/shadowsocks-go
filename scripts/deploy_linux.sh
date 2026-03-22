@@ -57,6 +57,13 @@ else
   JQ_BIN=""
 fi
 
+if command -v yq >/dev/null 2>&1; then
+  YQ_BIN="yq"
+else
+  echo "未找到 yq，无法安全写入配置文件，请先安装 yq v4+"
+  exit 1
+fi
+
 NODE_ID="${NODE_ID:-}"
 API_URL="${API_URL:-}"
 API_TOKEN="${API_TOKEN:-}"
@@ -231,31 +238,8 @@ chmod +x "$BIN_PATH"
 echo "下载 config.example.yaml..."
 download_text "$RAW_BASE_URL/configs/config.example.yaml" > "$CFG_PATH"
 
-tmp_file="$(mktemp)"
-awk -v node_id="$NODE_ID" -v api_url="$API_URL" -v api_token="$API_TOKEN" '
-BEGIN { section = "" }
-/^[[:space:]]*node:[[:space:]]*$/ { section = "node"; print; next }
-/^[[:space:]]*api:[[:space:]]*$/ { section = "api"; print; next }
-/^[a-zA-Z0-9_]+:[[:space:]]*$/ {
-  if ($0 !~ /^[[:space:]]*node:[[:space:]]*$/ && $0 !~ /^[[:space:]]*api:[[:space:]]*$/) {
-    section = ""
-  }
-}
-section == "node" && /^[[:space:]]*id:[[:space:]]*/ {
-  print "  id: " node_id
-  next
-}
-section == "api" && /^[[:space:]]*url:[[:space:]]*/ {
-  print "  url: " api_url
-  next
-}
-section == "api" && /^[[:space:]]*token:[[:space:]]*/ {
-  print "  token: " api_token
-  next
-}
-{ print }
-' "$CFG_PATH" > "$tmp_file"
-mv "$tmp_file" "$CFG_PATH"
+export NODE_ID API_URL API_TOKEN
+"$YQ_BIN" eval '.node.id = env(NODE_ID) | .api.url = strenv(API_URL) | .api.token = strenv(API_TOKEN)' -i "$CFG_PATH"
 
 cat > "$SERVICE_FILE" <<EOF
 [Unit]
