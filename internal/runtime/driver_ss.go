@@ -40,8 +40,7 @@ type ssPortRuntime struct {
 	udpConn     net.PacketConn
 	tcpSem      chan struct{}
 	udpSem      chan struct{}
-	connMu      sync.Mutex
-	activeConn  map[net.Conn]struct{}
+	connTrack   *connTracker
 	limitUp     *rate.Limiter
 	limitDown   *rate.Limiter
 	firstDetect bool
@@ -62,8 +61,10 @@ type ssPortRuntime struct {
 type SSDriver struct {
 	log *zap.Logger
 
-	mu    sync.RWMutex
-	ports map[int]*ssPortRuntime
+	mu         sync.RWMutex
+	ports      map[int]*ssPortRuntime
+	authGuard  *authFailGuard
+	handshakeS chan struct{}
 }
 
 type PortRuntimeStat struct {
@@ -74,7 +75,12 @@ type PortRuntimeStat struct {
 }
 
 func NewSSDriver(log *zap.Logger) *SSDriver {
-	return &SSDriver{log: log, ports: make(map[int]*ssPortRuntime)}
+	return &SSDriver{
+		log:        log,
+		ports:      make(map[int]*ssPortRuntime),
+		authGuard:  newAuthFailGuard(log, "ss"),
+		handshakeS: make(chan struct{}, defaultHandshakeMaxConcurrent),
+	}
 }
 
 func (d *SSDriver) Start(ctx context.Context, cfg PortConfig) error {
@@ -136,6 +142,9 @@ func (d *SSDriver) Stop(ctx context.Context, port int) error {
 }
 
 func (d *SSDriver) Snapshot(_ context.Context) (DriverSnapshot, error) {
+	if d.authGuard != nil {
+		d.authGuard.SweepNow()
+	}
 	d.mu.RLock()
 	defer d.mu.RUnlock()
 
@@ -245,7 +254,7 @@ func (d *SSDriver) startPortLocked(ctx context.Context, cfg PortConfig) (*ssPort
 		detect:      make(map[int]struct{}),
 		tcpSem:      make(chan struct{}, maxTCPConnPerPort),
 		udpSem:      make(chan struct{}, maxUDPPendingPerPort),
-		activeConn:  make(map[net.Conn]struct{}),
+		connTrack:   newConnTracker(),
 		limitUp:     newRateLimiter(cfg.NodeSpeedLimit),
 		limitDown:   newRateLimiter(cfg.NodeSpeedLimit),
 		firstDetect: false,
@@ -292,8 +301,25 @@ func (d *SSDriver) serveTCP(rt *ssPortRuntime) {
 			time.Sleep(100 * time.Millisecond)
 			continue
 		}
+		clientIP := addrIP(conn.RemoteAddr())
+		if d.isAuthBlocked(clientIP) {
+			d.logAuthSampled(clientIP, "ss tcp blocked by auth-fail threshold", zap.Int("port", port))
+			_ = conn.Close()
+			continue
+		}
+		select {
+		case <-rt.ctx.Done():
+			_ = conn.Close()
+			return
+		case d.handshakeS <- struct{}{}:
+		default:
+			d.logAuthSampled(clientIP, "ss tcp drop by handshake concurrency limit", zap.Int("port", port))
+			_ = conn.Close()
+			continue
+		}
 		rt.wg.Add(1)
 		go func(c net.Conn) {
+			defer func() { <-d.handshakeS }()
 			rt.addActiveConn(c)
 			defer rt.removeActiveConn(c)
 			if !acquireToken(rt.ctx, rt.tcpSem) {
@@ -314,7 +340,9 @@ func (d *SSDriver) serveTCP(rt *ssPortRuntime) {
 			target, err := socks.ReadAddr(c)
 			_ = c.SetReadDeadline(time.Time{})
 			if err != nil {
-				d.log.Warn("read target failed", zap.Int("port", port), zap.Error(err))
+				clientIP := addrIP(c.RemoteAddr())
+				d.recordAuthFail(clientIP, "ss tcp read target failed")
+				d.log.Debug("read target failed", zap.Int("port", port), zap.Error(err))
 				return
 			}
 
@@ -349,6 +377,27 @@ func (d *SSDriver) serveTCP(rt *ssPortRuntime) {
 			relayCounted(rt.ctx, rt.limitUp, rt.limitDown, port, c, remote, d.AddTraffic)
 		}(conn)
 	}
+}
+
+func (d *SSDriver) isAuthBlocked(ip string) bool {
+	if d.authGuard == nil {
+		return false
+	}
+	return d.authGuard.ShouldBlockNow(ip)
+}
+
+func (d *SSDriver) recordAuthFail(ip string, reason string) {
+	if d.authGuard == nil {
+		return
+	}
+	d.authGuard.RecordFailNow(ip, reason)
+}
+
+func (d *SSDriver) logAuthSampled(ip string, msg string, fields ...zap.Field) {
+	if d.authGuard == nil {
+		return
+	}
+	d.authGuard.LogSampledNow(ip, msg, fields...)
 }
 
 func (d *SSDriver) serveUDP(rt *ssPortRuntime) {
@@ -506,32 +555,20 @@ func relayCounted(ctx context.Context, upLimit, downLimit *rate.Limiter, port in
 }
 
 func (rt *ssPortRuntime) addActiveConn(conn net.Conn) {
-	if conn == nil {
-		return
+	if rt.connTrack != nil {
+		rt.connTrack.Add(conn)
 	}
-	rt.connMu.Lock()
-	rt.activeConn[conn] = struct{}{}
-	rt.connMu.Unlock()
 }
 
 func (rt *ssPortRuntime) removeActiveConn(conn net.Conn) {
-	if conn == nil {
-		return
+	if rt.connTrack != nil {
+		rt.connTrack.Remove(conn)
 	}
-	rt.connMu.Lock()
-	delete(rt.activeConn, conn)
-	rt.connMu.Unlock()
 }
 
 func (rt *ssPortRuntime) closeActiveConn() {
-	rt.connMu.Lock()
-	conns := make([]net.Conn, 0, len(rt.activeConn))
-	for c := range rt.activeConn {
-		conns = append(conns, c)
-	}
-	rt.connMu.Unlock()
-	for _, c := range conns {
-		_ = c.Close()
+	if rt.connTrack != nil {
+		rt.connTrack.CloseAll()
 	}
 }
 

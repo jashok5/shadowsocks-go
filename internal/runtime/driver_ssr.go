@@ -44,6 +44,7 @@ type SSRDriver struct {
 	userOnlineIP map[int]map[string]struct{}
 	wrongIP      map[string]time.Time
 	userDetect   map[int]map[int]struct{}
+	authGuard    *authFailGuard
 }
 
 type ssrInstance struct {
@@ -58,8 +59,8 @@ type ssrInstance struct {
 	ctx       context.Context
 	cancel    context.CancelFunc
 	wg        sync.WaitGroup
-	connMu    sync.Mutex
-	activeTCP map[net.Conn]struct{}
+	connTrack *connTracker
+	handshake chan struct{}
 }
 
 func NewSSRDriver(log *zap.Logger) *SSRDriver {
@@ -72,6 +73,7 @@ func NewSSRDriver(log *zap.Logger) *SSRDriver {
 		userOnlineIP: make(map[int]map[string]struct{}),
 		wrongIP:      make(map[string]time.Time),
 		userDetect:   make(map[int]map[int]struct{}),
+		authGuard:    newAuthFailGuard(log, "ssr"),
 	}
 }
 
@@ -119,7 +121,7 @@ func (d *SSRDriver) Start(_ context.Context, cfg PortConfig) error {
 	}
 
 	instCtx, cancel := context.WithCancel(context.Background())
-	inst := &ssrInstance{port: cfg.Port, proxy: proxy, cfg: cfg, detect: make(map[int]struct{}), limitUp: make(map[int]*rate.Limiter), limitDown: make(map[int]*rate.Limiter), ctx: instCtx, cancel: cancel, activeTCP: make(map[net.Conn]struct{})}
+	inst := &ssrInstance{port: cfg.Port, proxy: proxy, cfg: cfg, detect: make(map[int]struct{}), limitUp: make(map[int]*rate.Limiter), limitDown: make(map[int]*rate.Limiter), ctx: instCtx, cancel: cancel, connTrack: newConnTracker(), handshake: make(chan struct{}, defaultHandshakeMaxConcurrent)}
 	for uid, speed := range cfg.UserSpeed {
 		inst.limitUp[uid] = newRateLimiter(speed)
 		inst.limitDown[uid] = newRateLimiter(speed)
@@ -215,32 +217,20 @@ func (d *SSRDriver) Stop(ctx context.Context, port int) error {
 }
 
 func (inst *ssrInstance) addActiveTCP(conn net.Conn) {
-	if conn == nil {
-		return
+	if inst.connTrack != nil {
+		inst.connTrack.Add(conn)
 	}
-	inst.connMu.Lock()
-	inst.activeTCP[conn] = struct{}{}
-	inst.connMu.Unlock()
 }
 
 func (inst *ssrInstance) removeActiveTCP(conn net.Conn) {
-	if conn == nil {
-		return
+	if inst.connTrack != nil {
+		inst.connTrack.Remove(conn)
 	}
-	inst.connMu.Lock()
-	delete(inst.activeTCP, conn)
-	inst.connMu.Unlock()
 }
 
 func (inst *ssrInstance) closeActiveTCP() {
-	inst.connMu.Lock()
-	conns := make([]net.Conn, 0, len(inst.activeTCP))
-	for c := range inst.activeTCP {
-		conns = append(conns, c)
-	}
-	inst.connMu.Unlock()
-	for _, c := range conns {
-		_ = c.Close()
+	if inst.connTrack != nil {
+		inst.connTrack.CloseAll()
 	}
 }
 
@@ -576,9 +566,26 @@ func (d *SSRDriver) serveSSRTCP(inst *ssrInstance) {
 			time.Sleep(100 * time.Millisecond)
 			continue
 		}
+		ip := addrIP(conn.RemoteAddr())
+		if d.isAuthBlocked(ip) {
+			d.logAuthSampled(ip, "ssr tcp blocked by auth-fail threshold", zap.Int("port", inst.port))
+			_ = conn.Close()
+			continue
+		}
+		select {
+		case <-inst.ctx.Done():
+			_ = conn.Close()
+			return
+		case inst.handshake <- struct{}{}:
+		default:
+			d.logAuthSampled(ip, "ssr tcp drop by handshake concurrency limit", zap.Int("port", inst.port))
+			_ = conn.Close()
+			continue
+		}
 		inst.wg.Add(1)
 		go func(c net.Conn) {
 			defer inst.wg.Done()
+			defer func() { <-inst.handshake }()
 			inst.addActiveTCP(c)
 			defer inst.removeActiveTCP(c)
 			defer c.Close()
@@ -594,7 +601,9 @@ func (d *SSRDriver) serveSSRTCP(inst *ssrInstance) {
 				convertUsers(inst.cfg.Users),
 			)
 			if err != nil || ssrd == nil {
-				d.markWrongIP(addrIP(c.RemoteAddr()))
+				clientIP := addrIP(c.RemoteAddr())
+				d.markWrongIP(clientIP)
+				d.recordAuthFail(clientIP, "ssr tcp decorate failed")
 				d.log.Debug("ssr tcp decorate failed", zap.Int("port", inst.port), zap.Error(err))
 				return
 			}
@@ -607,7 +616,9 @@ func (d *SSRDriver) serveSSRTCP(inst *ssrInstance) {
 				if errors.Is(err, io.EOF) {
 					return
 				}
-				d.markWrongIP(addrIP(c.RemoteAddr()))
+				clientIP := addrIP(c.RemoteAddr())
+				d.markWrongIP(clientIP)
+				d.recordAuthFail(clientIP, "ssr tcp read target failed")
 				d.log.Debug("ssr tcp read target failed", zap.Int("port", inst.port), zap.Error(err))
 				return
 			}
@@ -802,6 +813,27 @@ func (d *SSRDriver) clearWrongIP(ip string) {
 	delete(d.wrongIP, ip)
 }
 
+func (d *SSRDriver) isAuthBlocked(ip string) bool {
+	if d.authGuard == nil {
+		return false
+	}
+	return d.authGuard.ShouldBlock(ip, time.Now())
+}
+
+func (d *SSRDriver) recordAuthFail(ip string, reason string) {
+	if d.authGuard == nil {
+		return
+	}
+	d.authGuard.RecordFailNow(ip, reason)
+}
+
+func (d *SSRDriver) logAuthSampled(ip string, msg string, fields ...zap.Field) {
+	if d.authGuard == nil {
+		return
+	}
+	d.authGuard.LogSampledNow(ip, msg, fields...)
+}
+
 func (d *SSRDriver) cleanWrongIP(inst *ssrInstance) {
 	ticker := time.NewTicker(30 * time.Second)
 	defer ticker.Stop()
@@ -818,6 +850,9 @@ func (d *SSRDriver) cleanWrongIP(inst *ssrInstance) {
 				}
 			}
 			d.trafficMu.Unlock()
+			if d.authGuard != nil {
+				d.authGuard.SweepNow()
+			}
 		}
 	}
 }
