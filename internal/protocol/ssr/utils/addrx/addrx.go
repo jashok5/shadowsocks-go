@@ -8,13 +8,11 @@ import (
 )
 
 func GetIPFromAddr(addr net.Addr) string {
-	switch addr.(type) {
+	switch addr := addr.(type) {
 	case *net.TCPAddr:
-		tcpAddr := addr.(*net.TCPAddr)
-		return tcpAddr.IP.String()
+		return addr.IP.String()
 	case *net.UDPAddr:
-		udpAddr := addr.(*net.UDPAddr)
-		return udpAddr.IP.String()
+		return addr.IP.String()
 	case nil:
 		return ""
 	default:
@@ -23,13 +21,11 @@ func GetIPFromAddr(addr net.Addr) string {
 }
 
 func GetPortFromAddr(addr net.Addr) int {
-	switch addr.(type) {
+	switch addr := addr.(type) {
 	case *net.TCPAddr:
-		tcpAddr := addr.(*net.TCPAddr)
-		return tcpAddr.Port
+		return addr.Port
 	case *net.UDPAddr:
-		udpAddr := addr.(*net.UDPAddr)
-		return udpAddr.Port
+		return addr.Port
 	case nil:
 		return 0
 	default:

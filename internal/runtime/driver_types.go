@@ -2,14 +2,19 @@ package runtime
 
 import (
 	"context"
+	"regexp"
 	"time"
 
 	"github.com/jashok5/shadowsocks-go/internal/model"
 )
 
 type DetectBuckets struct {
-	Text map[int]string
-	Hex  map[int]string
+	Text         map[int]string
+	Hex          map[int]string
+	TextCompiled map[int]*regexp.Regexp
+	HexCompiled  map[int]*regexp.Regexp
+	HexLiteral   map[int]string
+	HexBytes     map[int][]byte
 }
 
 type PortConfig struct {

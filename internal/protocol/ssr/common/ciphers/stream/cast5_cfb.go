@@ -27,8 +27,8 @@ func (a *cast5Cfb) NewStream(key, iv []byte, decryptOrEncrypt int) (cipher.Strea
 		return nil, err
 	}
 	if decryptOrEncrypt == 0 {
-		return cipher.NewCFBEncrypter(block, iv), nil
+		return newCFBCompat(block, iv, false), nil
 	}
 
-	return cipher.NewCFBDecrypter(block, iv), nil
+	return newCFBCompat(block, iv, true), nil
 }

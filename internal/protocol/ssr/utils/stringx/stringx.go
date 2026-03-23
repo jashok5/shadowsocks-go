@@ -8,7 +8,7 @@ func IsDigit(data string) bool {
 	if len(data) != 1 {
 		return false
 	}
-	if strings.IndexAny(data, "1234567890") != -1 {
+	if strings.ContainsAny(data, "1234567890") {
 		return true
 	}
 	return false

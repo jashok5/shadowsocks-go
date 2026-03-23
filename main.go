@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net"
 	"net/http"
+	_ "net/http/pprof"
 	"os"
 	"os/signal"
 	goRuntime "runtime"
@@ -20,6 +21,7 @@ import (
 	"github.com/jashok5/shadowsocks-go/internal/runtime"
 	"github.com/jashok5/shadowsocks-go/internal/transfer"
 	"github.com/jashok5/shadowsocks-go/internal/updater"
+	"go.uber.org/zap"
 )
 
 func main() {
@@ -46,6 +48,8 @@ func main() {
 	}
 	defer func() { _ = log.Sync() }()
 
+	startDebugServer(cfg, log)
+
 	httpClient := buildHTTPClient(cfg.API)
 	apiClient := api.NewClient(httpClient, cfg.API)
 	apiClient.SetLogger(log)
@@ -62,6 +66,7 @@ func main() {
 		MaxUDPSessionPerPort:      cfg.RT.MaxUDPSessionPerPort,
 		MaxUDPResolveCacheEntries: cfg.RT.MaxUDPResolveCacheEntries,
 		HandshakeMaxConcurrent:    cfg.RT.HandshakeMaxConcurrent,
+		PerIPHandshakeMax:         cfg.RT.PerIPHandshakeMax,
 	})
 	if err != nil {
 		log.Fatal("init runtime driver failed", logger.Err(err))
@@ -88,6 +93,23 @@ func main() {
 		os.Exit(1)
 	}
 	log.Info("node service stopped")
+}
+
+func startDebugServer(cfg config.Config, log *zap.Logger) {
+	if !cfg.Debug.PPROFEnabled {
+		return
+	}
+	addr := strings.TrimSpace(cfg.Debug.PPROFListen)
+	if addr == "" {
+		addr = "127.0.0.1:6060"
+	}
+	go func() {
+		srv := &http.Server{Addr: addr}
+		if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+			log.Warn("pprof server stopped", logger.Err(err), zap.String("listen", addr))
+		}
+	}()
+	log.Info("pprof server started", zap.String("listen", addr))
 }
 
 func buildHTTPClient(cfg config.APIConfig) *http.Client {

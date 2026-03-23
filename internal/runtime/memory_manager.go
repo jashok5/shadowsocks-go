@@ -395,7 +395,7 @@ func classifyRules(rules []model.DetectRule) DetectBuckets {
 		}
 		b.Hex[r.ID] = r.Regex
 	}
-	return b
+	return compileDetectBuckets(b)
 }
 
 func buildPortConfig(u model.User, node model.NodeInfo, buckets DetectBuckets, ruleHash string, opts Options) PortConfig {

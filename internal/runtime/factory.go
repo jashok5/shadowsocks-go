@@ -11,6 +11,7 @@ type DriverTuning struct {
 	MaxUDPSessionPerPort      int
 	MaxUDPResolveCacheEntries int
 	HandshakeMaxConcurrent    int
+	PerIPHandshakeMax         int
 }
 
 func (t DriverTuning) maxUDPSessionPerPortOr(def int) int {

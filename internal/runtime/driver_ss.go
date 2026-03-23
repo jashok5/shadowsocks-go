@@ -33,8 +33,11 @@ const (
 )
 
 type udpSession struct {
-	mu   sync.Mutex
-	conn *net.UDPConn
+	mu            sync.Mutex
+	conn          *net.UDPConn
+	clientAddr    net.Addr
+	srcAddr       []byte
+	readerRunning bool
 }
 
 type ssPortRuntime struct {
@@ -79,6 +82,7 @@ type SSDriver struct {
 	authGuard    *authFailGuard
 	handshakeS   chan struct{}
 	handshakeCap int
+	perIPCap     int
 	maxUDPSess   int
 	maxResolve   int
 }
@@ -102,8 +106,12 @@ func NewSSDriverWithTuning(log *zap.Logger, tuning DriverTuning) *SSDriver {
 		ports:        make(map[int]*ssPortRuntime),
 		authGuard:    newAuthFailGuard(log, "ss"),
 		handshakeCap: resolveHandshakeLimit(tuning.HandshakeMaxConcurrent),
+		perIPCap:     resolvePerIPHandshakeLimit(tuning.PerIPHandshakeMax),
 		maxUDPSess:   tuning.maxUDPSessionPerPortOr(maxUDPSessionPerPort),
 		maxResolve:   tuning.maxUDPResolveCacheEntriesOr(maxSSUDPResolveCacheEntries),
+	}
+	if d.authGuard != nil {
+		d.authGuard.inflightMax = d.perIPCap
 	}
 	d.ensureHandshakeSemaphore()
 	return d
@@ -133,6 +141,18 @@ func (d *SSDriver) Start(ctx context.Context, cfg PortConfig) error {
 }
 
 func (d *SSDriver) Reload(ctx context.Context, cfg PortConfig) error {
+	d.mu.RLock()
+	rt, ok := d.ports[cfg.Port]
+	d.mu.RUnlock()
+	if ok && canHotReloadSS(rt.cfg, cfg) {
+		d.mu.Lock()
+		rt.cfg = cfg
+		rt.limitUp = newRateLimiter(cfg.NodeSpeedLimit)
+		rt.limitDown = newRateLimiter(cfg.NodeSpeedLimit)
+		d.mu.Unlock()
+		d.log.Info("ss driver hot reload", zap.Int("port", cfg.Port), zap.Int("user_id", cfg.UserID))
+		return nil
+	}
 	if err := d.Stop(ctx, cfg.Port); err != nil {
 		return err
 	}
@@ -196,7 +216,7 @@ func (d *SSDriver) Snapshot(_ context.Context) (DriverSnapshot, error) {
 		for ip := range rt.onlineIP {
 			ips = append(ips, ip)
 		}
-		rt.onlineIP = make(map[string]struct{})
+		clear(rt.onlineIP)
 		rt.onlineMu.Unlock()
 		sort.Strings(ips)
 		out.OnlineIP[port] = ips
@@ -206,7 +226,7 @@ func (d *SSDriver) Snapshot(_ context.Context) (DriverSnapshot, error) {
 		for id := range rt.detect {
 			ruleIDs = append(ruleIDs, id)
 		}
-		rt.detect = make(map[int]struct{})
+		clear(rt.detect)
 		rt.firstDetect = false
 		rt.detectMu.Unlock()
 		sort.Ints(ruleIDs)
@@ -346,19 +366,27 @@ func (d *SSDriver) serveTCP(rt *ssPortRuntime) {
 			_ = conn.Close()
 			continue
 		}
+		if !authTryAcquireHandshake(d.authGuard, clientIP) {
+			d.logAuthSampled(clientIP, "ss tcp drop by per-ip handshake limit", zap.Int("port", port))
+			_ = conn.Close()
+			continue
+		}
 		select {
 		case <-rt.ctx.Done():
+			authReleaseHandshake(d.authGuard, clientIP)
 			_ = conn.Close()
 			return
 		case d.handshakeS <- struct{}{}:
 		default:
+			authReleaseHandshake(d.authGuard, clientIP)
 			d.logAuthSampled(clientIP, "ss tcp drop by handshake concurrency limit", zap.Int("port", port))
 			_ = conn.Close()
 			continue
 		}
 		rt.wg.Add(1)
-		go func(c net.Conn) {
+		go func(c net.Conn, clientIP string) {
 			defer func() { <-d.handshakeS }()
+			defer authReleaseHandshake(d.authGuard, clientIP)
 			rt.addActiveConn(c)
 			defer rt.removeActiveConn(c)
 			if !acquireToken(rt.ctx, rt.tcpSem) {
@@ -414,7 +442,7 @@ func (d *SSDriver) serveTCP(rt *ssPortRuntime) {
 				rt.detectMu.Unlock()
 			}
 			relayCounted(rt.ctx, rt.limitUp, rt.limitDown, port, c, remote, d.AddTraffic)
-		}(conn)
+		}(conn, clientIP)
 	}
 }
 
@@ -493,37 +521,19 @@ func (d *SSDriver) processUDPPacket(rt *ssPortRuntime, port int, raddr net.Addr,
 	if err != nil {
 		return
 	}
+	d.startUDPSessionReader(rt, port, sess)
 	sess.mu.Lock()
-	defer sess.mu.Unlock()
-	if sess.conn == nil {
+	conn := sess.conn
+	sess.mu.Unlock()
+	if conn == nil {
 		return
 	}
-	_ = sess.conn.SetDeadline(time.Now().Add(4 * time.Second))
-	if _, err = sess.conn.Write(body); err != nil {
+	_ = conn.SetWriteDeadline(time.Now().Add(4 * time.Second))
+	if _, err = conn.Write(body); err != nil {
 		return
 	}
 	_ = waitLimiter(rt.ctx, rt.limitUp, len(body))
 	d.AddTraffic(port, 0, int64(len(body)))
-
-	buf := acquireUDPPacketBuf(udpBufSize)
-	defer releaseUDPPacketBuf(buf)
-	nr, err := sess.conn.Read(buf)
-	if err != nil || nr <= 0 {
-		return
-	}
-
-	srcAddr := socks.ParseAddr(targetAddr.String())
-	if srcAddr == nil {
-		return
-	}
-	resp := make([]byte, len(srcAddr)+nr)
-	copy(resp, srcAddr)
-	copy(resp[len(srcAddr):], buf[:nr])
-	if _, err = rt.udpConn.WriteTo(resp, raddr); err != nil {
-		return
-	}
-	_ = waitLimiter(rt.ctx, rt.limitDown, nr)
-	d.AddTraffic(port, int64(nr), 0)
 }
 
 func relayCounted(ctx context.Context, upLimit, downLimit *rate.Limiter, port int, left, right net.Conn, addTraffic func(int, int64, int64)) {
@@ -608,7 +618,12 @@ func (d *SSDriver) getOrCreateUDPSession(rt *ssPortRuntime, raddr net.Addr, targ
 		if derr != nil {
 			return nil, derr
 		}
-		return &udpSession{conn: conn}, nil
+		srcAddr := socks.ParseAddr(target.String())
+		if srcAddr == nil {
+			_ = conn.Close()
+			return nil, fmt.Errorf("invalid udp source addr")
+		}
+		return &udpSession{conn: conn, clientAddr: raddr, srcAddr: append([]byte(nil), srcAddr...)}, nil
 	})
 	if err != nil {
 		return nil, err
@@ -618,6 +633,56 @@ func (d *SSDriver) getOrCreateUDPSession(rt *ssPortRuntime, raddr net.Addr, targ
 		return nil, fmt.Errorf("invalid udp session cache item type")
 	}
 	return sess, nil
+}
+
+func (d *SSDriver) startUDPSessionReader(rt *ssPortRuntime, port int, sess *udpSession) {
+	if sess == nil {
+		return
+	}
+	sess.mu.Lock()
+	if sess.readerRunning || sess.conn == nil {
+		sess.mu.Unlock()
+		return
+	}
+	sess.readerRunning = true
+	sess.mu.Unlock()
+
+	rt.wg.Go(func() {
+		defer func() {
+			sess.mu.Lock()
+			sess.readerRunning = false
+			sess.mu.Unlock()
+		}()
+		buf := acquireUDPPacketBuf(udpBufSize)
+		defer releaseUDPPacketBuf(buf)
+		for {
+			sess.mu.Lock()
+			conn := sess.conn
+			clientAddr := sess.clientAddr
+			srcAddr := sess.srcAddr
+			sess.mu.Unlock()
+			if conn == nil || clientAddr == nil || len(srcAddr) == 0 {
+				return
+			}
+			_ = conn.SetReadDeadline(time.Now().Add(4 * time.Second))
+			nr, rerr := conn.Read(buf)
+			if nr > 0 {
+				resp := acquireUDPPacketBuf(len(srcAddr) + nr)
+				copy(resp, srcAddr)
+				copy(resp[len(srcAddr):], buf[:nr])
+				_, _ = rt.udpConn.WriteTo(resp[:len(srcAddr)+nr], clientAddr)
+				releaseUDPPacketBuf(resp)
+				_ = waitLimiter(rt.ctx, rt.limitDown, nr)
+				d.AddTraffic(port, int64(nr), 0)
+			}
+			if rerr != nil {
+				if ne, ok := errors.AsType[net.Error](rerr); ok && ne.Timeout() {
+					return
+				}
+				return
+			}
+		}
+	})
 }
 
 func (rt *ssPortRuntime) sweepUDPSessions(now time.Time) {
@@ -675,10 +740,29 @@ func (d *SSDriver) applyDetect(port int, payload []byte) {
 	if !ok || len(payload) == 0 {
 		return
 	}
-	walkMatchedRules(string(payload), rt.cfg.Detect, func(ruleID int) bool {
+	walkMatchedRulesBytes(payload, rt.cfg.Detect, func(ruleID int) bool {
 		d.AddDetectRule(port, ruleID)
 		return true
 	})
+}
+
+func canHotReloadSS(oldCfg, newCfg PortConfig) bool {
+	if oldCfg.Port != newCfg.Port || oldCfg.UserID != newCfg.UserID {
+		return false
+	}
+	if oldCfg.Password != newCfg.Password || oldCfg.Method != newCfg.Method {
+		return false
+	}
+	if oldCfg.Protocol != newCfg.Protocol || oldCfg.Obfs != newCfg.Obfs {
+		return false
+	}
+	if oldCfg.IsMultiUser != newCfg.IsMultiUser {
+		return false
+	}
+	if oldCfg.ProtocolParam != newCfg.ProtocolParam || oldCfg.ObfsParam != newCfg.ObfsParam {
+		return false
+	}
+	return true
 }
 
 func acquireToken(ctx context.Context, sem chan struct{}) bool {

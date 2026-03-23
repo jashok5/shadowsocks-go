@@ -14,9 +14,15 @@ type Config struct {
 	API      APIConfig      `mapstructure:"api"`
 	Sync     SyncConfig     `mapstructure:"sync"`
 	RT       RuntimeConfig  `mapstructure:"runtime"`
+	Debug    DebugConfig    `mapstructure:"debug"`
 	Security SecurityConfig `mapstructure:"security"`
 	Update   UpdateConfig   `mapstructure:"update"`
 	Log      LogConfig      `mapstructure:"log"`
+}
+
+type DebugConfig struct {
+	PPROFEnabled bool   `mapstructure:"pprof_enabled"`
+	PPROFListen  string `mapstructure:"pprof_listen"`
 }
 
 type SecurityConfig struct {
@@ -71,6 +77,7 @@ type RuntimeConfig struct {
 	Driver                    string           `mapstructure:"driver"`
 	ReconcileWorkers          int              `mapstructure:"reconcile_workers"`
 	HandshakeMaxConcurrent    int              `mapstructure:"handshake_max_concurrent"`
+	PerIPHandshakeMax         int              `mapstructure:"per_ip_handshake_max"`
 	OnUnsupportedCipher       string           `mapstructure:"on_unsupported_cipher"`
 	DialTimeout               time.Duration    `mapstructure:"dial_timeout"`
 	DNSPreferIPv4             bool             `mapstructure:"dns_prefer_ipv4"`
@@ -172,6 +179,9 @@ func (c Config) Validate() error {
 	if c.RT.HandshakeMaxConcurrent < 0 {
 		return fmt.Errorf("runtime.handshake_max_concurrent must be >= 0")
 	}
+	if c.RT.PerIPHandshakeMax < 0 {
+		return fmt.Errorf("runtime.per_ip_handshake_max must be >= 0")
+	}
 	switch strings.ToLower(strings.TrimSpace(c.RT.OnUnsupportedCipher)) {
 	case "", "skip", "fail":
 	default:
@@ -257,6 +267,7 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("runtime.driver", "mock")
 	v.SetDefault("runtime.reconcile_workers", 0)
 	v.SetDefault("runtime.handshake_max_concurrent", 0)
+	v.SetDefault("runtime.per_ip_handshake_max", 0)
 	v.SetDefault("runtime.on_unsupported_cipher", "skip")
 	v.SetDefault("runtime.dial_timeout", "8s")
 	v.SetDefault("runtime.dns_prefer_ipv4", false)
@@ -272,6 +283,9 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("security.auto_block.sync_interval", "60s")
 	v.SetDefault("security.auto_block.protect_node_ip", true)
 	v.SetDefault("security.auto_block.static_whitelist", []string{"127.0.0.1", "::1"})
+
+	v.SetDefault("debug.pprof_enabled", false)
+	v.SetDefault("debug.pprof_listen", "127.0.0.1:6060")
 
 	v.SetDefault("update.enabled", false)
 	v.SetDefault("update.repository", "jashok5/shadowsocks-go")

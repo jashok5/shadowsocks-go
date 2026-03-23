@@ -256,7 +256,7 @@ func (otls *TLS) ServerEncode(buf []byte) ([]byte, error) {
 	finishLen := randomx.RandomIntChoice([]int{32, 40})
 	data = conbineToBytes(data, byte(0x16), otls.TLSVersion, uint16(finishLen), randomx.RandomBytes(finishLen-10))
 	data = conbineToBytes(data, hmacsha1(conbineToBytes(otls.GetServerInfo().GetKey(), otls.ClientID), data)[:10])
-	if buf != nil && len(buf) != 0 {
+	if len(buf) != 0 {
 		tmp, err := otls.ServerEncode(buf)
 		if err != nil {
 			return nil, err

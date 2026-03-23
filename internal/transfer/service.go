@@ -7,6 +7,7 @@ import (
 	"math"
 	"os"
 	"regexp"
+	goRuntime "runtime"
 	"strconv"
 	"strings"
 	"sync/atomic"
@@ -282,9 +283,23 @@ func (s *Service) syncOnce(ctx context.Context) error {
 			}
 		}
 	}
+	s.logRuntimeMemStats()
 
 	s.log.Info("sync cycle complete", zap.Int("users", len(users)), zap.Int("rules", len(rules)), zap.Duration("cost", time.Since(cycleStart)))
 	return nil
+}
+
+func (s *Service) logRuntimeMemStats() {
+	var ms goRuntime.MemStats
+	goRuntime.ReadMemStats(&ms)
+	s.log.Debug("runtime memstats",
+		zap.Uint64("heap_alloc", ms.HeapAlloc),
+		zap.Uint64("heap_inuse", ms.HeapInuse),
+		zap.Uint64("heap_objects", ms.HeapObjects),
+		zap.Uint32("num_gc", ms.NumGC),
+		zap.Uint64("gc_pause_total_ns", ms.PauseTotalNs),
+		zap.Int("goroutines", goRuntime.NumGoroutine()),
+	)
 }
 
 var nodeNameOffsetPattern = regexp.MustCompile(`#(\d+)`)

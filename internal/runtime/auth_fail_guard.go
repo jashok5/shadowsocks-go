@@ -16,6 +16,7 @@ const (
 	defaultAuthBlockDuration = 5 * time.Minute
 	defaultAuthLogInterval   = 10 * time.Second
 	defaultAuthStateTTL      = 15 * time.Minute
+	defaultPerIPHandshakeMax = 32
 )
 
 type authFailState struct {
@@ -23,17 +24,19 @@ type authFailState struct {
 	Count       int
 	BlockedTill time.Time
 	LastLog     time.Time
+	InFlight    int
 }
 
 type authFailGuard struct {
 	mu     sync.Mutex
 	states map[string]*authFailState
 
-	window    time.Duration
-	threshold int
-	blockFor  time.Duration
-	logEvery  time.Duration
-	stateTTL  time.Duration
+	window      time.Duration
+	threshold   int
+	blockFor    time.Duration
+	logEvery    time.Duration
+	stateTTL    time.Duration
+	inflightMax int
 
 	log    *zap.Logger
 	driver string
@@ -44,14 +47,50 @@ func newAuthFailGuard(log *zap.Logger, driver string) *authFailGuard {
 		log = zap.NewNop()
 	}
 	return &authFailGuard{
-		states:    make(map[string]*authFailState),
-		window:    defaultAuthFailWindow,
-		threshold: defaultAuthFailThreshold,
-		blockFor:  defaultAuthBlockDuration,
-		logEvery:  defaultAuthLogInterval,
-		stateTTL:  defaultAuthStateTTL,
-		log:       log,
-		driver:    strings.TrimSpace(driver),
+		states:      make(map[string]*authFailState),
+		window:      defaultAuthFailWindow,
+		threshold:   defaultAuthFailThreshold,
+		blockFor:    defaultAuthBlockDuration,
+		logEvery:    defaultAuthLogInterval,
+		stateTTL:    defaultAuthStateTTL,
+		inflightMax: defaultPerIPHandshakeMax,
+		log:         log,
+		driver:      strings.TrimSpace(driver),
+	}
+}
+
+func (g *authFailGuard) TryAcquireHandshake(ip string) bool {
+	ip = strings.TrimSpace(ip)
+	if ip == "" {
+		return true
+	}
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	st, ok := g.states[ip]
+	if !ok || st == nil {
+		st = &authFailState{WindowStart: time.Now()}
+		g.states[ip] = st
+	}
+	if st.InFlight >= g.inflightMax {
+		return false
+	}
+	st.InFlight++
+	return true
+}
+
+func (g *authFailGuard) ReleaseHandshake(ip string) {
+	ip = strings.TrimSpace(ip)
+	if ip == "" {
+		return
+	}
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	st, ok := g.states[ip]
+	if !ok || st == nil {
+		return
+	}
+	if st.InFlight > 0 {
+		st.InFlight--
 	}
 }
 

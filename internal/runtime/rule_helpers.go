@@ -1,24 +1,115 @@
 package runtime
 
 import (
-	"fmt"
+	"bytes"
+	"encoding/hex"
 	"regexp"
 	"strconv"
 	"strings"
 )
 
 func walkMatchedRules(payload string, buckets DetectBuckets, onHit func(ruleID int) bool) {
+	walkMatchedRulesBytes([]byte(payload), buckets, onHit)
+}
+
+func walkMatchedRulesBytes(payload []byte, buckets DetectBuckets, onHit func(ruleID int) bool) {
+	if len(payload) == 0 {
+		return
+	}
+
+	var payloadText string
 	for id, expr := range buckets.Text {
-		if matchPattern(payload, expr) && !onHit(id) {
+		if re := buckets.TextCompiled[id]; re != nil {
+			if re.Match(payload) && !onHit(id) {
+				return
+			}
+			continue
+		}
+		if payloadText == "" {
+			payloadText = string(payload)
+		}
+		if matchPattern(payloadText, expr) && !onHit(id) {
 			return
 		}
 	}
-	hx := strings.ToLower(fmt.Sprintf("%x", payload))
+
+	if len(buckets.Hex) == 0 {
+		return
+	}
+
+	var hexPayload string
 	for id, expr := range buckets.Hex {
-		if matchPattern(hx, strings.ToLower(strings.TrimSpace(expr))) && !onHit(id) {
+		if lit := buckets.HexBytes[id]; len(lit) > 0 {
+			if bytes.Contains(payload, lit) && !onHit(id) {
+				return
+			}
+			continue
+		}
+		if lit := buckets.HexLiteral[id]; lit != "" {
+			if hexPayload == "" {
+				hexPayload = hex.EncodeToString(payload)
+			}
+			if strings.Contains(hexPayload, lit) && !onHit(id) {
+				return
+			}
+			continue
+		}
+		if re := buckets.HexCompiled[id]; re != nil {
+			if hexPayload == "" {
+				hexPayload = hex.EncodeToString(payload)
+			}
+			if re.MatchString(hexPayload) && !onHit(id) {
+				return
+			}
+			continue
+		}
+		if hexPayload == "" {
+			hexPayload = hex.EncodeToString(payload)
+		}
+		if matchPattern(hexPayload, strings.ToLower(strings.TrimSpace(expr))) && !onHit(id) {
 			return
 		}
 	}
+}
+
+func compileDetectBuckets(b DetectBuckets) DetectBuckets {
+	b.TextCompiled = make(map[int]*regexp.Regexp, len(b.Text))
+	b.HexCompiled = make(map[int]*regexp.Regexp, len(b.Hex))
+	b.HexLiteral = make(map[int]string, len(b.Hex))
+	b.HexBytes = make(map[int][]byte, len(b.Hex))
+
+	for id, expr := range b.Text {
+		expr = strings.TrimSpace(expr)
+		if expr == "" {
+			continue
+		}
+		re, err := regexp.Compile(expr)
+		if err == nil {
+			b.TextCompiled[id] = re
+		}
+	}
+
+	for id, expr := range b.Hex {
+		norm := strings.ToLower(strings.TrimSpace(expr))
+		if norm == "" {
+			continue
+		}
+		if regexp.QuoteMeta(norm) == norm {
+			b.HexLiteral[id] = norm
+			if len(norm)%2 == 0 {
+				if raw, err := hex.DecodeString(norm); err == nil && len(raw) > 0 {
+					b.HexBytes[id] = raw
+				}
+			}
+			continue
+		}
+		re, err := regexp.Compile(norm)
+		if err == nil {
+			b.HexCompiled[id] = re
+		}
+	}
+
+	return b
 }
 
 func matchPattern(input, expr string) bool {

@@ -10,7 +10,6 @@ import (
 	"github.com/jashok5/shadowsocks-go/internal/protocol/ss/internal"
 )
 
-// payloadSizeMask is the maximum size of payload in bytes.
 const payloadSizeMask = 0x3FFF // 16*1024 - 1
 
 type writer struct {
@@ -86,9 +85,7 @@ func newReader(r io.Reader, aead cipher.AEAD) *reader {
 	}
 }
 
-// read and decrypt a record into the internal buffer. Return decrypted payload length and any error encountered.
 func (r *reader) read() (int, error) {
-	// decrypt payload size
 	buf := r.buf[:2+r.Overhead()]
 	_, err := io.ReadFull(r.Reader, buf)
 	if err != nil {
@@ -103,7 +100,6 @@ func (r *reader) read() (int, error) {
 
 	size := (int(buf[0])<<8 + int(buf[1])) & payloadSizeMask
 
-	// decrypt payload
 	buf = r.buf[:size+r.Overhead()]
 	_, err = io.ReadFull(r.Reader, buf)
 	if err != nil {
@@ -119,9 +115,7 @@ func (r *reader) read() (int, error) {
 	return size, nil
 }
 
-// Read reads from the embedded io.Reader, decrypts and writes to b.
 func (r *reader) Read(b []byte) (int, error) {
-	// copy decrypted bytes (if any) from previous record first
 	if len(r.leftover) > 0 {
 		n := copy(b, r.leftover)
 		r.leftover = r.leftover[n:]
@@ -130,17 +124,13 @@ func (r *reader) Read(b []byte) (int, error) {
 
 	n, err := r.read()
 	m := copy(b, r.buf[:n])
-	if m < n { // insufficient len(b), keep leftover for next read
+	if m < n {
 		r.leftover = r.buf[m:n]
 	}
 	return m, err
 }
 
-// WriteTo reads from the embedded io.Reader, decrypts and writes to w until
-// there's no more data to write or when an error occurs. Return number of
-// bytes written to w and any error encountered.
 func (r *reader) WriteTo(w io.Writer) (n int64, err error) {
-	// write decrypted bytes left over from previous record
 	for len(r.leftover) > 0 {
 		nw, ew := w.Write(r.leftover)
 		r.leftover = r.leftover[nw:]
@@ -173,7 +163,6 @@ func (r *reader) WriteTo(w io.Writer) (n int64, err error) {
 	return n, err
 }
 
-// increment little-endian encoded unsigned integer b. Wrap around on overflow.
 func increment(b []byte) {
 	for i := range b {
 		b[i]++
@@ -262,5 +251,4 @@ func (c *streamConn) ReadFrom(r io.Reader) (int64, error) {
 	return c.w.ReadFrom(r)
 }
 
-// NewConn wraps a stream-oriented net.Conn with cipher.
 func NewConn(c net.Conn, ciph Cipher) net.Conn { return &streamConn{Conn: c, Cipher: ciph} }

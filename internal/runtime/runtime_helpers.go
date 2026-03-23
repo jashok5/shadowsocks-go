@@ -60,6 +60,20 @@ func authLogSampled(g *authFailGuard, ip string, msg string, fields ...zap.Field
 	g.LogSampledNow(ip, msg, fields...)
 }
 
+func authTryAcquireHandshake(g *authFailGuard, ip string) bool {
+	if g == nil {
+		return true
+	}
+	return g.TryAcquireHandshake(ip)
+}
+
+func authReleaseHandshake(g *authFailGuard, ip string) {
+	if g == nil {
+		return
+	}
+	g.ReleaseHandshake(ip)
+}
+
 func trackerAddConn(t *connTracker, conn net.Conn) {
 	if t != nil {
 		t.Add(conn)
@@ -88,6 +102,20 @@ func resolveHandshakeLimit(configured int) int {
 	}
 	if v > 2048 {
 		v = 2048
+	}
+	return v
+}
+
+func resolvePerIPHandshakeLimit(configured int) int {
+	if configured > 0 {
+		return configured
+	}
+	v := 8 * stdRuntime.GOMAXPROCS(0)
+	if v < 8 {
+		v = 8
+	}
+	if v > 128 {
+		v = 128
 	}
 	return v
 }

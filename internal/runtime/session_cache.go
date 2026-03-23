@@ -16,6 +16,8 @@ type evictedEntry struct {
 
 type sessionCache struct {
 	entries    map[string]sessionCacheEntry
+	order      []string
+	cursor     int
 	maxEntries int
 	ttl        time.Duration
 	onEvict    func(string, any)
@@ -38,8 +40,13 @@ type SessionCacheSnapshot struct {
 }
 
 func newSessionCache(maxEntries int, ttl time.Duration, onEvict func(string, any)) *sessionCache {
+	orderCap := maxEntries
+	if orderCap < 64 {
+		orderCap = 64
+	}
 	return &sessionCache{
 		entries:    make(map[string]sessionCacheEntry),
+		order:      make([]string, 0, orderCap),
 		maxEntries: maxEntries,
 		ttl:        ttl,
 		onEvict:    onEvict,
@@ -77,7 +84,7 @@ func (c *sessionCache) GetOrCreate(key string, creator func() (any, error)) (any
 	}
 	if c.maxEntries > 0 {
 		for len(c.entries) >= c.maxEntries {
-			if k, v, ok := c.evictOldest(); ok {
+			if k, v, ok := c.evictApproxOldest(); ok {
 				c.evicted++
 				evicted = append(evicted, evictedEntry{key: k, value: v})
 			} else {
@@ -86,6 +93,7 @@ func (c *sessionCache) GetOrCreate(key string, creator func() (any, error)) (any
 		}
 	}
 	c.entries[key] = sessionCacheEntry{value: created, lastAccess: now}
+	c.order = append(c.order, key)
 	c.creates++
 	c.runEvictCallbacks(evicted)
 	return created, nil
@@ -106,6 +114,8 @@ func (c *sessionCache) CloseAll() {
 		evicted = append(evicted, evictedEntry{key: key, value: ent.value})
 	}
 	c.entries = make(map[string]sessionCacheEntry)
+	c.order = c.order[:0]
+	c.cursor = 0
 	c.runEvictCallbacks(evicted)
 }
 
@@ -123,27 +133,54 @@ func (c *sessionCache) collectExpired(now time.Time) []evictedEntry {
 	return out
 }
 
-func (c *sessionCache) evictOldest() (string, any, bool) {
-	if len(c.entries) == 0 {
+func (c *sessionCache) evictApproxOldest() (string, any, bool) {
+	if len(c.entries) == 0 || len(c.order) == 0 {
 		return "", nil, false
 	}
-	var (
-		oldestKey string
-		oldest    sessionCacheEntry
-		found     bool
-	)
-	for key, ent := range c.entries {
-		if !found || ent.lastAccess.Before(oldest.lastAccess) {
-			oldestKey = key
-			oldest = ent
-			found = true
+	steps := len(c.order)
+	for i := 0; i < steps; i++ {
+		if c.cursor >= len(c.order) {
+			c.cursor = 0
 		}
+		k := c.order[c.cursor]
+		c.cursor++
+		ent, ok := c.entries[k]
+		if !ok {
+			continue
+		}
+		delete(c.entries, k)
+		if len(c.order) > 4*c.maxEntries {
+			c.compactOrder()
+		}
+		return k, ent.value, true
 	}
-	if !found {
-		return "", nil, false
+	for k, ent := range c.entries {
+		delete(c.entries, k)
+		return k, ent.value, true
 	}
-	delete(c.entries, oldestKey)
-	return oldestKey, oldest.value, true
+	return "", nil, false
+}
+
+func (c *sessionCache) compactOrder() {
+	if len(c.order) == 0 {
+		return
+	}
+	n := make([]string, 0, len(c.entries))
+	seen := make(map[string]struct{}, len(c.entries))
+	for _, k := range c.order {
+		if _, ok := c.entries[k]; !ok {
+			continue
+		}
+		if _, ok := seen[k]; ok {
+			continue
+		}
+		seen[k] = struct{}{}
+		n = append(n, k)
+	}
+	c.order = n
+	if c.cursor >= len(c.order) {
+		c.cursor = 0
+	}
 }
 
 func (c *sessionCache) isExpired(ent sessionCacheEntry, now time.Time) bool {

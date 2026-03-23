@@ -50,12 +50,14 @@ type SSRDriver struct {
 	authGuard    *authFailGuard
 	maxResolve   int
 	handshakeCap int
+	perIPCap     int
 }
 
 type ssrInstance struct {
 	port      int
 	proxy     *vnetServer.ShadowsocksRProxy
 	cfg       PortConfig
+	usersPack map[string]string
 	detect    map[int]struct{}
 	tcp       net.Listener
 	udp       net.PacketConn
@@ -77,7 +79,7 @@ type SSRPortCacheStat struct {
 }
 
 func NewSSRDriverWithTuning(log *zap.Logger, tuning DriverTuning) *SSRDriver {
-	return &SSRDriver{
+	d := &SSRDriver{
 		log:          log,
 		servers:      make(map[int]*ssrInstance),
 		transfer:     make(map[int]model.PortTransfer),
@@ -89,7 +91,12 @@ func NewSSRDriverWithTuning(log *zap.Logger, tuning DriverTuning) *SSRDriver {
 		authGuard:    newAuthFailGuard(log, "ssr"),
 		maxResolve:   tuning.maxUDPResolveCacheEntriesOr(maxSSRUDPResolveCacheEntries),
 		handshakeCap: resolveHandshakeLimit(tuning.HandshakeMaxConcurrent),
+		perIPCap:     resolvePerIPHandshakeLimit(tuning.PerIPHandshakeMax),
 	}
+	if d.authGuard != nil {
+		d.authGuard.inflightMax = d.perIPCap
+	}
+	return d
 }
 
 func (d *SSRDriver) Start(_ context.Context, cfg PortConfig) error {
@@ -109,6 +116,7 @@ func (d *SSRDriver) Start(_ context.Context, cfg PortConfig) error {
 		return fmt.Errorf("ssr port %d already started", cfg.Port)
 	}
 
+	usersPack := convertUsers(cfg.Users)
 	proxy := &vnetServer.ShadowsocksRProxy{
 		Host:          "0.0.0.0",
 		Port:          cfg.Port,
@@ -119,7 +127,7 @@ func (d *SSRDriver) Start(_ context.Context, cfg PortConfig) error {
 		Obfs:          cfg.Obfs,
 		ObfsParam:     buildMultiUserObfsParam(cfg),
 		Single:        boolToSingle(cfg.IsMultiUser),
-		Users:         convertUsers(cfg.Users),
+		Users:         usersPack,
 		ShadowsocksRArgs: &vnetServer.ShadowsocksRArgs{
 			TCPSwitch: "false",
 			UDPSwitch: "false",
@@ -136,7 +144,7 @@ func (d *SSRDriver) Start(_ context.Context, cfg PortConfig) error {
 	}
 
 	instCtx, cancel := context.WithCancel(context.Background())
-	inst := &ssrInstance{port: cfg.Port, proxy: proxy, cfg: cfg, detect: make(map[int]struct{}), limitUp: make(map[int]*rate.Limiter), limitDown: make(map[int]*rate.Limiter), ctx: instCtx, cancel: cancel, connTrack: newConnTracker(), handshake: make(chan struct{}, d.handshakeCap)}
+	inst := &ssrInstance{port: cfg.Port, proxy: proxy, cfg: cfg, usersPack: usersPack, detect: make(map[int]struct{}), limitUp: make(map[int]*rate.Limiter), limitDown: make(map[int]*rate.Limiter), ctx: instCtx, cancel: cancel, connTrack: newConnTracker(), handshake: make(chan struct{}, d.handshakeCap)}
 	inst.resolvedAddrTTL = newSessionCache(d.maxResolve, ssrUDPResolveTTL, nil)
 	for uid, speed := range cfg.UserSpeed {
 		inst.limitUp[uid] = newRateLimiter(speed)
@@ -178,9 +186,11 @@ func (d *SSRDriver) Reload(ctx context.Context, cfg PortConfig) error {
 	inst, ok := d.servers[cfg.Port]
 	d.mu.RUnlock()
 	if ok && canHotReloadSSR(inst.cfg, cfg) {
-		inst.proxy.Reload(convertUsers(cfg.Users))
+		usersPack := convertUsers(cfg.Users)
+		inst.proxy.Reload(usersPack)
 		d.mu.Lock()
 		inst.cfg = cfg
+		inst.usersPack = usersPack
 		d.mu.Unlock()
 		d.log.Info("ssr driver hot reload users", zap.Int("port", cfg.Port), zap.Int("users", len(cfg.Users)))
 		return nil
@@ -244,7 +254,7 @@ func (d *SSRDriver) Snapshot(_ context.Context) (DriverSnapshot, error) {
 			ids = append(ids, id)
 		}
 		detect[port] = ids
-		inst.detect = make(map[int]struct{})
+		clear(inst.detect)
 	}
 	d.mu.Unlock()
 
@@ -285,9 +295,15 @@ func (d *SSRDriver) Snapshot(_ context.Context) (DriverSnapshot, error) {
 	}
 	sort.Strings(wrongIP)
 
-	d.onlineIP = make(map[int]map[string]struct{})
-	d.userOnlineIP = make(map[int]map[string]struct{})
-	d.userDetect = make(map[int]map[int]struct{})
+	for k := range d.onlineIP {
+		delete(d.onlineIP, k)
+	}
+	for k := range d.userOnlineIP {
+		delete(d.userOnlineIP, k)
+	}
+	for k := range d.userDetect {
+		delete(d.userDetect, k)
+	}
 
 	return DriverSnapshot{Transfer: transfer, UserTransfer: userTransfer, OnlineIP: online, UserOnlineIP: userOnline, Detect: detect, UserDetect: userDetect, WrongIP: wrongIP}, nil
 }
@@ -334,8 +350,8 @@ func (d *SSRDriver) markUserDetect(userID int, ruleID int) {
 	d.userDetect[userID][ruleID] = struct{}{}
 }
 
-func (d *SSRDriver) applySSRDetect(userID int, payload string, buckets DetectBuckets) {
-	walkMatchedRules(payload, buckets, func(ruleID int) bool {
+func (d *SSRDriver) applySSRDetect(userID int, payload []byte, buckets DetectBuckets) {
+	walkMatchedRulesBytes(payload, buckets, func(ruleID int) bool {
 		d.markUserDetect(userID, ruleID)
 		return true
 	})
@@ -548,20 +564,28 @@ func (d *SSRDriver) serveSSRTCP(inst *ssrInstance) {
 			_ = conn.Close()
 			continue
 		}
+		if !authTryAcquireHandshake(d.authGuard, ip) {
+			d.logAuthSampled(ip, "ssr tcp drop by per-ip handshake limit", zap.Int("port", inst.port))
+			_ = conn.Close()
+			continue
+		}
 		select {
 		case <-inst.ctx.Done():
+			authReleaseHandshake(d.authGuard, ip)
 			_ = conn.Close()
 			return
 		case inst.handshake <- struct{}{}:
 		default:
+			authReleaseHandshake(d.authGuard, ip)
 			d.logAuthSampled(ip, "ssr tcp drop by handshake concurrency limit", zap.Int("port", inst.port))
 			_ = conn.Close()
 			continue
 		}
 		inst.wg.Add(1)
-		go func(c net.Conn) {
+		go func(c net.Conn, ip string) {
 			defer inst.wg.Done()
 			defer func() { <-inst.handshake }()
+			defer authReleaseHandshake(d.authGuard, ip)
 			inst.addActiveTCP(c)
 			defer inst.removeActiveTCP(c)
 			defer c.Close()
@@ -574,7 +598,7 @@ func (d *SSRDriver) serveSSRTCP(inst *ssrInstance) {
 				"0.0.0.0", inst.port,
 				false,
 				boolToSingle(inst.cfg.IsMultiUser),
-				convertUsers(inst.cfg.Users),
+				inst.usersPack,
 			)
 			if err != nil || ssrd == nil {
 				clientIP := addrIP(c.RemoteAddr())
@@ -613,7 +637,7 @@ func (d *SSRDriver) serveSSRTCP(inst *ssrInstance) {
 			if inst.proxy.HostFirewall != nil && !inst.proxy.HostFirewall.JudgeHostWithReport(addr.GetAddress(), uid) {
 				return
 			}
-			d.applySSRDetect(uid, addr.String(), inst.cfg.Detect)
+			d.applySSRDetect(uid, []byte(addr.String()), inst.cfg.Detect)
 			upLimiter := inst.limitUp[uid]
 			downLimiter := inst.limitDown[uid]
 
@@ -624,7 +648,7 @@ func (d *SSRDriver) serveSSRTCP(inst *ssrInstance) {
 			}
 			defer remote.Close()
 			relayQuietLimited(inst.ctx, ssrd, remote, upLimiter, downLimiter)
-		}(conn)
+		}(conn, ip)
 	}
 }
 
@@ -697,7 +721,7 @@ func (d *SSRDriver) serveSSRUDP(inst *ssrInstance) {
 		"0.0.0.0", inst.port,
 		false,
 		boolToSingle(inst.cfg.IsMultiUser),
-		convertUsers(inst.cfg.Users),
+		inst.usersPack,
 	)
 	if err != nil || ssrd == nil {
 		d.log.Error("new ssr decorate for udp failed", zap.Int("port", inst.port), zap.Error(err))
@@ -741,7 +765,7 @@ func (d *SSRDriver) serveSSRUDP(inst *ssrInstance) {
 		if inst.proxy.HostFirewall != nil && !inst.proxy.HostFirewall.JudgeHostWithReport(remoteAddr.GetAddress(), uidInt) {
 			continue
 		}
-		d.applySSRDetect(uidInt, string(payload), inst.cfg.Detect)
+		d.applySSRDetect(uidInt, payload, inst.cfg.Detect)
 		upLimiter := inst.limitUp[uidInt]
 
 		remotePacketConn := udpMap.Get(addr.String())

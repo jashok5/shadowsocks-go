@@ -10,14 +10,10 @@ import (
 	"github.com/jashok5/shadowsocks-go/internal/protocol/ss/internal"
 )
 
-// ErrShortPacket means that the packet is too short for a valid encrypted packet.
 var ErrShortPacket = errors.New("short packet")
 
-var _zerononce [128]byte // read-only. 128 bytes is more than enough.
+var _zerononce [128]byte
 
-// Pack encrypts plaintext using Cipher with a randomly generated salt and
-// returns a slice of dst containing the encrypted packet and any error occurred.
-// Ensure len(dst) >= ciph.SaltSize() + len(plaintext) + aead.Overhead().
 func Pack(dst, plaintext []byte, ciph Cipher) ([]byte, error) {
 	saltSize := ciph.SaltSize()
 	salt := dst[:saltSize]
@@ -38,8 +34,6 @@ func Pack(dst, plaintext []byte, ciph Cipher) ([]byte, error) {
 	return dst[:saltSize+len(b)], nil
 }
 
-// Unpack decrypts pkt using Cipher and returns a slice of dst containing the decrypted payload and any error occurred.
-// Ensure len(dst) >= len(pkt) - aead.SaltSize() - aead.Overhead().
 func Unpack(dst, pkt []byte, ciph Cipher) ([]byte, error) {
 	saltSize := ciph.SaltSize()
 	if len(pkt) < saltSize {
@@ -70,13 +64,11 @@ type packetConn struct {
 	buf []byte // write lock
 }
 
-// NewPacketConn wraps a net.PacketConn with cipher
 func NewPacketConn(c net.PacketConn, ciph Cipher) net.PacketConn {
 	const maxPacketSize = 64 * 1024
 	return &packetConn{PacketConn: c, Cipher: ciph, buf: make([]byte, maxPacketSize)}
 }
 
-// WriteTo encrypts b and write to addr using the embedded PacketConn.
 func (c *packetConn) WriteTo(b []byte, addr net.Addr) (int, error) {
 	c.Lock()
 	defer c.Unlock()
@@ -88,7 +80,6 @@ func (c *packetConn) WriteTo(b []byte, addr net.Addr) (int, error) {
 	return len(b), err
 }
 
-// ReadFrom reads from the embedded PacketConn and decrypts into b.
 func (c *packetConn) ReadFrom(b []byte) (int, net.Addr, error) {
 	n, addr, err := c.PacketConn.ReadFrom(b)
 	if err != nil {

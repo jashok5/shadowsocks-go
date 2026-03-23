@@ -7,7 +7,6 @@ import (
 	"github.com/riobard/go-bloom"
 )
 
-// simply use Double FNV here as our Bloom Filter hash
 func doubleFNV(b []byte) (uint64, uint64) {
 	hx := fnv.New64()
 	hx.Write(b)

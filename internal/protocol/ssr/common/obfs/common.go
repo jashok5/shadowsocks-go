@@ -141,7 +141,7 @@ func (c *ClientQueue) DelRef() {
 }
 
 func (c *ClientQueue) IsActive() bool {
-	return c.Ref > 0 && time.Now().Sub(c.LastUpdate).Seconds() < 60*10
+	return c.Ref > 0 && time.Since(c.LastUpdate).Seconds() < 60*10
 }
 
 func (c *ClientQueue) ReEnable(connectionID int) {
@@ -281,7 +281,7 @@ func (o *AuthChainData) AuthData() []byte {
 	if o.ConnectionID > 0xFF000000 {
 		o.LocalClientId = []byte{}
 	}
-	if o.LocalClientId == nil || len(o.LocalClientId) == 0 {
+	if len(o.LocalClientId) == 0 {
 		o.LocalClientId = randomx.RandomBytes(4)
 		//log.Debug("local_client_id %s", hex.EncodeToString(o.ObfsAuthChainDato.LocalClientId))
 		o.ConnectionID = int(binaryx.LEBytesToUInt32(randomx.RandomBytes(4)) & 0xFFFFFFFF)

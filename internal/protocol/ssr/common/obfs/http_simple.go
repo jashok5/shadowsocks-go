@@ -228,7 +228,7 @@ func (h *HttpSimple) ServerDecode(buf []byte) ([]byte, bool, bool, error) {
 		return []byte{}, true, false, nil
 	}
 
-	if strings.Index(string(buf), "\r\n\r\n") >= 0 {
+	if strings.Contains(string(buf), "\r\n\r\n") {
 		datas := strings.Split(string(buf), "\r\n\r\n")
 		resultBuf, err := h.getDataFromHttpHeader(buf)
 		if err != nil {

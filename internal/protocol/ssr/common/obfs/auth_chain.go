@@ -219,8 +219,7 @@ func (a *AuthChainA) ServerPreEncrypt(buf []byte) (result []byte, err error) {
 	}
 	result = []byte{}
 	if a.PackID == 1 {
-		var tcpMass int
-		tcpMass = min(a.GetServerInfo().GetTCPMss(), 1500)
+		tcpMass := min(a.GetServerInfo().GetTCPMss(), 1500)
 		a.GetServerInfo().SetTCPMss(tcpMass)
 		buf = bytesx.ContactSlice(binaryx.LEUInt16ToBytes(uint16(tcpMass)), buf)
 		a.UnintLen = tcpMass - a.ClientOverhead

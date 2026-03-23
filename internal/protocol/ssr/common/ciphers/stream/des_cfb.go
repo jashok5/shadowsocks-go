@@ -26,8 +26,8 @@ func (a *desCfb) NewStream(key, iv []byte, decryptOrEncrypt int) (cipher.Stream,
 		return nil, err
 	}
 	if decryptOrEncrypt == 0 {
-		return cipher.NewCFBEncrypter(block, iv), nil
+		return newCFBCompat(block, iv, false), nil
 	}
 
-	return cipher.NewCFBDecrypter(block, iv), nil
+	return newCFBCompat(block, iv, true), nil
 }

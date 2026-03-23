@@ -5,7 +5,7 @@ import (
 	"encoding/binary"
 
 	"github.com/jashok5/shadowsocks-go/internal/protocol/ssr/common/pool"
-	"golang.org/x/crypto/salsa20/salsa"
+	xsalsa20 "golang.org/x/crypto/salsa20"
 )
 
 func init() {
@@ -57,7 +57,7 @@ func (c *salsaStreamCipher) XORKeyStream(dst, src []byte) {
 	// It's difficult to avoid data copy here. src or dst maybe slice from
 	// Conn.Read/Write, which can't have padding.
 	copy(buf[padLen:], src[:])
-	salsa.XORKeyStream(buf, buf, &subNonce, &c.key)
+	xsalsa20.XORKeyStream(buf, buf, subNonce[:], &c.key)
 	copy(dst, buf[padLen:])
 
 	c.counter += len(src)

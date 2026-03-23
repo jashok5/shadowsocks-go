@@ -5,35 +5,28 @@ import "sync"
 const BufferSize = 4096
 
 var (
-	poolMap    map[int]*sync.Pool
-	getBufLock *sync.Mutex
+	bufPool = sync.Pool{
+		New: createAllocFunc(BufferSize),
+	}
 )
 
-func init() {
-	poolMap = make(map[int]*sync.Pool)
-	getBufLock = new(sync.Mutex)
-}
-
 func GetBuf() []byte {
-	pool := poolMap[BufferSize]
-	if pool == nil {
-		getBufLock.Lock()
-		poolMap[BufferSize] = &sync.Pool{
-			New: createAllocFunc(BufferSize),
-		}
-		getBufLock.Unlock()
-	}
-	buf := poolMap[BufferSize].Get().([]byte)
+	buf := *(bufPool.Get().(*[]byte))
 	buf = buf[:cap(buf)]
 	return buf
 }
 
 func PutBuf(buf []byte) {
-	poolMap[cap(buf)].Put(buf)
+	if cap(buf) < BufferSize {
+		return
+	}
+	b := buf[:BufferSize]
+	bufPool.Put(&b)
 }
 
 func createAllocFunc(size int) func() any {
 	return func() any {
-		return make([]byte, size)
+		b := make([]byte, size)
+		return &b
 	}
 }
