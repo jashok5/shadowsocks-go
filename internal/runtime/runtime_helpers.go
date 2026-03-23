@@ -4,6 +4,8 @@ import (
 	"context"
 	"net"
 	stdRuntime "runtime"
+	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -74,6 +76,14 @@ func authReleaseHandshake(g *authFailGuard, ip string) {
 	g.ReleaseHandshake(ip)
 }
 
+func authHandshakeKey(ip string, port int) string {
+	ip = strings.TrimSpace(ip)
+	if ip == "" {
+		return ""
+	}
+	return ip + "|" + strconv.Itoa(port)
+}
+
 func trackerAddConn(t *connTracker, conn net.Conn) {
 	if t != nil {
 		t.Add(conn)
@@ -110,12 +120,5 @@ func resolvePerIPHandshakeLimit(configured int) int {
 	if configured > 0 {
 		return configured
 	}
-	v := 8 * stdRuntime.GOMAXPROCS(0)
-	if v < 8 {
-		v = 8
-	}
-	if v > 128 {
-		v = 128
-	}
-	return v
+	return 0
 }

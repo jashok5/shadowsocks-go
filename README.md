@@ -79,6 +79,8 @@ update:
 runtime:
   driver: ssr
   reconcile_workers: 8
+  handshake_max_concurrent: 0
+  per_ip_handshake_max: 0
   on_unsupported_cipher: skip
   dial_timeout: 8s
   dns_prefer_ipv4: false
@@ -136,6 +138,7 @@ log:
 - `runtime.driver`：运行时驱动，`mock`、`ss` 或 `ssr`
 - `runtime.reconcile_workers`：端口收敛并发 worker 数（`0` 表示按 CPU 自适应）
 - `runtime.handshake_max_concurrent`：握手并发上限（`0` 表示按 CPU 自适应）
+- `runtime.per_ip_handshake_max`：单个来源 IP 的握手并发上限（`0` 表示禁用该限制；建议 NAT 场景保持 `0`）
 - `runtime.on_unsupported_cipher`：不支持加密算法时策略，`skip`（跳过用户）或 `fail`（当前同步失败）
 - `runtime.dial_timeout`：TCP/UDP 上游目标连接超时
 - `runtime.dns_prefer_ipv4`：上游解析时优先 IPv4

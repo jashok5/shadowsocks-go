@@ -361,32 +361,41 @@ func (d *SSDriver) serveTCP(rt *ssPortRuntime) {
 			continue
 		}
 		clientIP := addrIP(conn.RemoteAddr())
+		handshakeKey := authHandshakeKey(clientIP, port)
 		if d.isAuthBlocked(clientIP) {
 			d.logAuthSampled(clientIP, "ss tcp blocked by auth-fail threshold", zap.Int("port", port))
 			_ = conn.Close()
 			continue
 		}
-		if !authTryAcquireHandshake(d.authGuard, clientIP) {
+		if !authTryAcquireHandshake(d.authGuard, handshakeKey) {
 			d.logAuthSampled(clientIP, "ss tcp drop by per-ip handshake limit", zap.Int("port", port))
 			_ = conn.Close()
 			continue
 		}
 		select {
 		case <-rt.ctx.Done():
-			authReleaseHandshake(d.authGuard, clientIP)
+			authReleaseHandshake(d.authGuard, handshakeKey)
 			_ = conn.Close()
 			return
 		case d.handshakeS <- struct{}{}:
 		default:
-			authReleaseHandshake(d.authGuard, clientIP)
+			authReleaseHandshake(d.authGuard, handshakeKey)
 			d.logAuthSampled(clientIP, "ss tcp drop by handshake concurrency limit", zap.Int("port", port))
 			_ = conn.Close()
 			continue
 		}
 		rt.wg.Add(1)
-		go func(c net.Conn, clientIP string) {
+		go func(c net.Conn, clientIP string, handshakeKey string) {
 			defer func() { <-d.handshakeS }()
-			defer authReleaseHandshake(d.authGuard, clientIP)
+			handshakeReleased := false
+			releaseHandshake := func() {
+				if handshakeReleased {
+					return
+				}
+				authReleaseHandshake(d.authGuard, handshakeKey)
+				handshakeReleased = true
+			}
+			defer releaseHandshake()
 			rt.addActiveConn(c)
 			defer rt.removeActiveConn(c)
 			if !acquireToken(rt.ctx, rt.tcpSem) {
@@ -412,6 +421,7 @@ func (d *SSDriver) serveTCP(rt *ssPortRuntime) {
 				d.log.Debug("read target failed", zap.Int("port", port), zap.Error(err))
 				return
 			}
+			releaseHandshake()
 
 			host, portText, splitErr := net.SplitHostPort(target.String())
 			if splitErr != nil {
@@ -442,7 +452,7 @@ func (d *SSDriver) serveTCP(rt *ssPortRuntime) {
 				rt.detectMu.Unlock()
 			}
 			relayCounted(rt.ctx, rt.limitUp, rt.limitDown, port, c, remote, d.AddTraffic)
-		}(conn, clientIP)
+		}(conn, clientIP, handshakeKey)
 	}
 }
 

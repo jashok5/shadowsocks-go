@@ -24,12 +24,12 @@ type authFailState struct {
 	Count       int
 	BlockedTill time.Time
 	LastLog     time.Time
-	InFlight    int
 }
 
 type authFailGuard struct {
-	mu     sync.Mutex
-	states map[string]*authFailState
+	mu       sync.Mutex
+	states   map[string]*authFailState
+	inflight map[string]int
 
 	window      time.Duration
 	threshold   int
@@ -48,6 +48,7 @@ func newAuthFailGuard(log *zap.Logger, driver string) *authFailGuard {
 	}
 	return &authFailGuard{
 		states:      make(map[string]*authFailState),
+		inflight:    make(map[string]int),
 		window:      defaultAuthFailWindow,
 		threshold:   defaultAuthFailThreshold,
 		blockFor:    defaultAuthBlockDuration,
@@ -59,39 +60,41 @@ func newAuthFailGuard(log *zap.Logger, driver string) *authFailGuard {
 	}
 }
 
-func (g *authFailGuard) TryAcquireHandshake(ip string) bool {
-	ip = strings.TrimSpace(ip)
-	if ip == "" {
+func (g *authFailGuard) TryAcquireHandshake(key string) bool {
+	key = strings.TrimSpace(key)
+	if key == "" {
+		return true
+	}
+	if g.inflightMax <= 0 {
 		return true
 	}
 	g.mu.Lock()
 	defer g.mu.Unlock()
-	st, ok := g.states[ip]
-	if !ok || st == nil {
-		st = &authFailState{WindowStart: time.Now()}
-		g.states[ip] = st
-	}
-	if st.InFlight >= g.inflightMax {
+	v := g.inflight[key]
+	if v >= g.inflightMax {
 		return false
 	}
-	st.InFlight++
+	g.inflight[key] = v + 1
 	return true
 }
 
-func (g *authFailGuard) ReleaseHandshake(ip string) {
-	ip = strings.TrimSpace(ip)
-	if ip == "" {
+func (g *authFailGuard) ReleaseHandshake(key string) {
+	key = strings.TrimSpace(key)
+	if key == "" {
 		return
 	}
 	g.mu.Lock()
 	defer g.mu.Unlock()
-	st, ok := g.states[ip]
-	if !ok || st == nil {
+	v, ok := g.inflight[key]
+	if !ok || v <= 0 {
 		return
 	}
-	if st.InFlight > 0 {
-		st.InFlight--
+	v--
+	if v == 0 {
+		delete(g.inflight, key)
+		return
 	}
+	g.inflight[key] = v
 }
 
 func (g *authFailGuard) ShouldBlock(ip string, now time.Time) bool {

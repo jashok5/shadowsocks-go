@@ -559,33 +559,42 @@ func (d *SSRDriver) serveSSRTCP(inst *ssrInstance) {
 			continue
 		}
 		ip := addrIP(conn.RemoteAddr())
+		handshakeKey := authHandshakeKey(ip, inst.port)
 		if d.isAuthBlocked(ip) {
 			d.logAuthSampled(ip, "ssr tcp blocked by auth-fail threshold", zap.Int("port", inst.port))
 			_ = conn.Close()
 			continue
 		}
-		if !authTryAcquireHandshake(d.authGuard, ip) {
+		if !authTryAcquireHandshake(d.authGuard, handshakeKey) {
 			d.logAuthSampled(ip, "ssr tcp drop by per-ip handshake limit", zap.Int("port", inst.port))
 			_ = conn.Close()
 			continue
 		}
 		select {
 		case <-inst.ctx.Done():
-			authReleaseHandshake(d.authGuard, ip)
+			authReleaseHandshake(d.authGuard, handshakeKey)
 			_ = conn.Close()
 			return
 		case inst.handshake <- struct{}{}:
 		default:
-			authReleaseHandshake(d.authGuard, ip)
+			authReleaseHandshake(d.authGuard, handshakeKey)
 			d.logAuthSampled(ip, "ssr tcp drop by handshake concurrency limit", zap.Int("port", inst.port))
 			_ = conn.Close()
 			continue
 		}
 		inst.wg.Add(1)
-		go func(c net.Conn, ip string) {
+		go func(c net.Conn, ip string, handshakeKey string) {
 			defer inst.wg.Done()
 			defer func() { <-inst.handshake }()
-			defer authReleaseHandshake(d.authGuard, ip)
+			handshakeReleased := false
+			releaseHandshake := func() {
+				if handshakeReleased {
+					return
+				}
+				authReleaseHandshake(d.authGuard, handshakeKey)
+				handshakeReleased = true
+			}
+			defer releaseHandshake()
 			inst.addActiveTCP(c)
 			defer inst.removeActiveTCP(c)
 			defer c.Close()
@@ -625,6 +634,7 @@ func (d *SSRDriver) serveSSRTCP(inst *ssrInstance) {
 			if addr == nil {
 				return
 			}
+			releaseHandshake()
 
 			uid := ssrd.UID
 			if uid == 0 {
@@ -648,7 +658,7 @@ func (d *SSRDriver) serveSSRTCP(inst *ssrInstance) {
 			}
 			defer remote.Close()
 			relayQuietLimited(inst.ctx, ssrd, remote, upLimiter, downLimiter)
-		}(conn, ip)
+		}(conn, ip, handshakeKey)
 	}
 }
 

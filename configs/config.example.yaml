@@ -30,6 +30,7 @@ runtime:
   driver: ssr
   reconcile_workers: 0
   handshake_max_concurrent: 0
+  per_ip_handshake_max: 0
   on_unsupported_cipher: skip
   dial_timeout: 8s
   dns_prefer_ipv4: true
