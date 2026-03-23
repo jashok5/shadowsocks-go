@@ -7,13 +7,14 @@ import (
 	"golang.org/x/time/rate"
 )
 
-func newRateLimiter(kbps float64) *rate.Limiter {
-	if kbps <= 0 {
+func newRateLimiter(mbps float64) *rate.Limiter {
+	if mbps <= 0 {
 		return nil
 	}
-	bps := kbps * 1024
-	burst := int(math.Max(1024, bps))
-	return rate.NewLimiter(rate.Limit(bps), burst)
+
+	bytesPerSec := mbps * 1_000_000 / 8
+	burst := int(math.Max(1024, bytesPerSec))
+	return rate.NewLimiter(rate.Limit(bytesPerSec), burst)
 }
 
 func waitLimiter(ctx context.Context, l *rate.Limiter, n int) error {
