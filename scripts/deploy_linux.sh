@@ -43,6 +43,8 @@ dnf update -y
 dnf install epel-release -y
 dnf config-manager --enable crb
 dnf install wget yq -y
+echo -e "\n# Enable BBR congestion control\nnet.core.default_qdisc = fq\nnet.ipv4.tcp_congestion_control = bbr" | sudo tee -a /etc/sysctl.conf
+sysctl -p
 
 if command -v curl >/dev/null 2>&1; then
   FETCH_CMD="curl -fsSL"
