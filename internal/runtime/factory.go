@@ -7,14 +7,41 @@ import (
 	"go.uber.org/zap"
 )
 
-func NewDriver(name string, log *zap.Logger) (Driver, error) {
+type DriverTuning struct {
+	MaxUDPSessionPerPort      int
+	MaxUDPResolveCacheEntries int
+	HandshakeMaxConcurrent    int
+}
+
+func (t DriverTuning) maxUDPSessionPerPortOr(def int) int {
+	if t.MaxUDPSessionPerPort > 0 {
+		return t.MaxUDPSessionPerPort
+	}
+	return def
+}
+
+func (t DriverTuning) maxUDPResolveCacheEntriesOr(def int) int {
+	if t.MaxUDPResolveCacheEntries > 0 {
+		return t.MaxUDPResolveCacheEntries
+	}
+	return def
+}
+
+func (t DriverTuning) handshakeMaxConcurrentOr(def int) int {
+	if t.HandshakeMaxConcurrent > 0 {
+		return t.HandshakeMaxConcurrent
+	}
+	return def
+}
+
+func NewDriver(name string, log *zap.Logger, tuning DriverTuning) (Driver, error) {
 	switch strings.ToLower(strings.TrimSpace(name)) {
 	case "", "mock":
 		return NewMockDriver(), nil
 	case "ss":
-		return NewSSDriver(log), nil
+		return NewSSDriverWithTuning(log, tuning), nil
 	case "ssr":
-		return NewSSRDriver(log), nil
+		return NewSSRDriverWithTuning(log, tuning), nil
 	default:
 		return nil, fmt.Errorf("unsupported runtime driver: %s", name)
 	}

@@ -27,9 +27,11 @@ import (
 )
 
 const (
-	ssrHandshakeTimeout = 10 * time.Second
-	ssrRelayIOTimeout   = 120 * time.Second
-	ssrStopTimeout      = 15 * time.Second
+	ssrHandshakeTimeout          = 10 * time.Second
+	ssrRelayIOTimeout            = 120 * time.Second
+	ssrStopTimeout               = 15 * time.Second
+	maxSSRUDPResolveCacheEntries = 4096
+	ssrUDPResolveTTL             = 30 * time.Second
 )
 
 type SSRDriver struct {
@@ -46,6 +48,8 @@ type SSRDriver struct {
 	wrongIP      map[string]time.Time
 	userDetect   map[int]map[int]struct{}
 	authGuard    *authFailGuard
+	maxResolve   int
+	handshakeCap int
 }
 
 type ssrInstance struct {
@@ -62,9 +66,17 @@ type ssrInstance struct {
 	wg        sync.WaitGroup
 	connTrack *connTracker
 	handshake chan struct{}
+
+	resolveMu       sync.Mutex
+	resolvedAddrTTL *sessionCache
 }
 
-func NewSSRDriver(log *zap.Logger) *SSRDriver {
+type SSRPortCacheStat struct {
+	Port            int
+	UDPResolveCache SessionCacheSnapshot
+}
+
+func NewSSRDriverWithTuning(log *zap.Logger, tuning DriverTuning) *SSRDriver {
 	return &SSRDriver{
 		log:          log,
 		servers:      make(map[int]*ssrInstance),
@@ -75,6 +87,8 @@ func NewSSRDriver(log *zap.Logger) *SSRDriver {
 		wrongIP:      make(map[string]time.Time),
 		userDetect:   make(map[int]map[int]struct{}),
 		authGuard:    newAuthFailGuard(log, "ssr"),
+		maxResolve:   tuning.maxUDPResolveCacheEntriesOr(maxSSRUDPResolveCacheEntries),
+		handshakeCap: resolveHandshakeLimit(tuning.HandshakeMaxConcurrent),
 	}
 }
 
@@ -122,7 +136,8 @@ func (d *SSRDriver) Start(_ context.Context, cfg PortConfig) error {
 	}
 
 	instCtx, cancel := context.WithCancel(context.Background())
-	inst := &ssrInstance{port: cfg.Port, proxy: proxy, cfg: cfg, detect: make(map[int]struct{}), limitUp: make(map[int]*rate.Limiter), limitDown: make(map[int]*rate.Limiter), ctx: instCtx, cancel: cancel, connTrack: newConnTracker(), handshake: make(chan struct{}, defaultHandshakeMaxConcurrent)}
+	inst := &ssrInstance{port: cfg.Port, proxy: proxy, cfg: cfg, detect: make(map[int]struct{}), limitUp: make(map[int]*rate.Limiter), limitDown: make(map[int]*rate.Limiter), ctx: instCtx, cancel: cancel, connTrack: newConnTracker(), handshake: make(chan struct{}, d.handshakeCap)}
+	inst.resolvedAddrTTL = newSessionCache(d.maxResolve, ssrUDPResolveTTL, nil)
 	for uid, speed := range cfg.UserSpeed {
 		inst.limitUp[uid] = newRateLimiter(speed)
 		inst.limitDown[uid] = newRateLimiter(speed)
@@ -145,8 +160,13 @@ func (d *SSRDriver) Start(_ context.Context, cfg PortConfig) error {
 		cancel()
 		return fmt.Errorf("start ssr udp port %d failed: %w", cfg.Port, err)
 	}
-	inst.wg.Go(func() {
-		d.cleanWrongIP(inst)
+	startPeriodicBackground(&inst.wg, inst.ctx, 30*time.Second, func(now time.Time) {
+		d.cleanWrongIP(now)
+	}, nil)
+	startPeriodicBackground(&inst.wg, inst.ctx, 30*time.Second, func(now time.Time) {
+		d.cleanResolvedUDPAddr(inst, now)
+	}, func() {
+		closeSessionCache(&inst.resolveMu, inst.resolvedAddrTTL)
 	})
 
 	d.log.Info("ssr driver start", zap.Int("port", cfg.Port), zap.String("method", cfg.Method), zap.String("protocol", cfg.Protocol), zap.String("obfs", cfg.Obfs))
@@ -172,14 +192,9 @@ func (d *SSRDriver) Reload(ctx context.Context, cfg PortConfig) error {
 }
 
 func (d *SSRDriver) Stop(ctx context.Context, port int) error {
-	if ctx == nil {
-		ctx = context.Background()
-	}
-	if _, ok := ctx.Deadline(); !ok {
-		stopCtx, cancel := context.WithTimeout(ctx, ssrStopTimeout)
-		defer cancel()
-		ctx = stopCtx
-	}
+	var cancel context.CancelFunc
+	ctx, cancel = normalizeStopContext(ctx, ssrStopTimeout)
+	defer cancel()
 	d.mu.Lock()
 	inst, ok := d.servers[port]
 	if ok {
@@ -200,37 +215,24 @@ func (d *SSRDriver) Stop(ctx context.Context, port int) error {
 	if inst.udp != nil {
 		_ = inst.udp.Close()
 	}
-	done := make(chan struct{})
-	go func() {
-		defer close(done)
-		inst.wg.Wait()
-	}()
-	select {
-	case <-done:
-	case <-ctx.Done():
-		d.log.Warn("ssr driver stop timeout", zap.Int("port", port), zap.Error(ctx.Err()))
-		return ctx.Err()
+	if err := waitGroupWithContext(ctx, &inst.wg); err != nil {
+		d.log.Warn("ssr driver stop timeout", zap.Int("port", port), zap.Error(err))
+		return err
 	}
 	d.log.Info("ssr driver stop", zap.Int("port", port))
 	return nil
 }
 
 func (inst *ssrInstance) addActiveTCP(conn net.Conn) {
-	if inst.connTrack != nil {
-		inst.connTrack.Add(conn)
-	}
+	trackerAddConn(inst.connTrack, conn)
 }
 
 func (inst *ssrInstance) removeActiveTCP(conn net.Conn) {
-	if inst.connTrack != nil {
-		inst.connTrack.Remove(conn)
-	}
+	trackerRemoveConn(inst.connTrack, conn)
 }
 
 func (inst *ssrInstance) closeActiveTCP() {
-	if inst.connTrack != nil {
-		inst.connTrack.CloseAll()
-	}
+	trackerCloseAll(inst.connTrack)
 }
 
 func (d *SSRDriver) Snapshot(_ context.Context) (DriverSnapshot, error) {
@@ -641,7 +643,8 @@ func relayQuietLimited(ctx context.Context, left net.Conn, right net.Conn, upLim
 }
 
 func relayOneWayLimited(ctx context.Context, src net.Conn, dst net.Conn, limiter *rate.Limiter) {
-	buf := make([]byte, 32*1024)
+	buf := acquireRelayBuf()
+	defer releaseRelayBuf(buf)
 	for {
 		if err := src.SetReadDeadline(time.Now().Add(ssrRelayIOTimeout)); err != nil {
 			return
@@ -681,9 +684,7 @@ func (d *SSRDriver) startUDPListener(inst *ssrInstance) error {
 		return err
 	}
 	inst.udp = udpConn
-	inst.wg.Go(func() {
-		d.serveSSRUDP(inst)
-	})
+	startBackgroundTasks(&inst.wg, func() { d.serveSSRUDP(inst) })
 	return nil
 }
 
@@ -752,7 +753,7 @@ func (d *SSRDriver) serveSSRUDP(inst *ssrInstance) {
 			}
 			udpMap.Add(addr, ssrd, remotePacketConn)
 		}
-		remoteResolve, rerr := resolveUDPAddrWithConfig(inst.ctx, inst.cfg, remoteAddr.String())
+		remoteResolve, rerr := inst.resolveUDPAddrWithCache(remoteAddr.String())
 		if rerr != nil {
 			d.markWrongIP(addrIP(addr))
 			continue
@@ -786,47 +787,56 @@ func (d *SSRDriver) clearWrongIP(ip string) {
 }
 
 func (d *SSRDriver) isAuthBlocked(ip string) bool {
-	if d.authGuard == nil {
-		return false
-	}
-	return d.authGuard.ShouldBlock(ip, time.Now())
+	return authShouldBlock(d.authGuard, ip)
 }
 
 func (d *SSRDriver) recordAuthFail(ip string, reason string) {
-	if d.authGuard == nil {
-		return
-	}
-	d.authGuard.RecordFailNow(ip, reason)
+	authRecordFail(d.authGuard, ip, reason)
 }
 
 func (d *SSRDriver) logAuthSampled(ip string, msg string, fields ...zap.Field) {
-	if d.authGuard == nil {
-		return
-	}
-	d.authGuard.LogSampledNow(ip, msg, fields...)
+	authLogSampled(d.authGuard, ip, msg, fields...)
 }
 
-func (d *SSRDriver) cleanWrongIP(inst *ssrInstance) {
-	ticker := time.NewTicker(30 * time.Second)
-	defer ticker.Stop()
-	for {
-		select {
-		case <-inst.ctx.Done():
-			return
-		case <-ticker.C:
-			cut := time.Now().Add(-60 * time.Second)
-			d.trafficMu.Lock()
-			for ip, ts := range d.wrongIP {
-				if ts.Before(cut) {
-					delete(d.wrongIP, ip)
-				}
-			}
-			d.trafficMu.Unlock()
-			if d.authGuard != nil {
-				d.authGuard.SweepNow()
-			}
+func (d *SSRDriver) cleanWrongIP(now time.Time) {
+	cut := now.Add(-60 * time.Second)
+	d.trafficMu.Lock()
+	for ip, ts := range d.wrongIP {
+		if ts.Before(cut) {
+			delete(d.wrongIP, ip)
 		}
 	}
+	d.trafficMu.Unlock()
+	if d.authGuard != nil {
+		d.authGuard.SweepNow()
+	}
+}
+
+func (d *SSRDriver) cleanResolvedUDPAddr(inst *ssrInstance, now time.Time) {
+	sweepSessionCache(&inst.resolveMu, inst.resolvedAddrTTL, now)
+}
+
+func (inst *ssrInstance) resolveUDPAddrWithCache(target string) (*net.UDPAddr, error) {
+	return resolveUDPAddrFromCache(&inst.resolveMu, inst.resolvedAddrTTL, target, func(v string) (*net.UDPAddr, error) {
+		return resolveUDPAddrWithConfig(inst.ctx, inst.cfg, v)
+	}, "invalid ssr udp resolve cache item type")
+}
+
+func (d *SSRDriver) CacheStats() []SSRPortCacheStat {
+	d.mu.RLock()
+	defer d.mu.RUnlock()
+	out := make([]SSRPortCacheStat, 0, len(d.servers))
+	for port, inst := range d.servers {
+		inst.resolveMu.Lock()
+		snap := SessionCacheSnapshot{}
+		if inst.resolvedAddrTTL != nil {
+			snap = inst.resolvedAddrTTL.Snapshot()
+		}
+		inst.resolveMu.Unlock()
+		out = append(out, SSRPortCacheStat{Port: port, UDPResolveCache: snap})
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Port < out[j].Port })
+	return out
 }
 
 var _ vnetCommon.TrafficReport = (trafficReporter)(nil)

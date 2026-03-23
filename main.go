@@ -5,9 +5,11 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"net"
 	"net/http"
 	"os"
 	"os/signal"
+	goRuntime "runtime"
 	"strings"
 	"syscall"
 	"time"
@@ -44,7 +46,7 @@ func main() {
 	}
 	defer func() { _ = log.Sync() }()
 
-	httpClient := &http.Client{Timeout: cfg.API.Timeout}
+	httpClient := buildHTTPClient(cfg.API)
 	apiClient := api.NewClient(httpClient, cfg.API)
 	apiClient.SetLogger(log)
 
@@ -56,11 +58,15 @@ func main() {
 		}
 	}
 
-	drv, err := runtime.NewDriver(cfg.RT.Driver, log)
+	drv, err := runtime.NewDriver(cfg.RT.Driver, log, runtime.DriverTuning{
+		MaxUDPSessionPerPort:      cfg.RT.MaxUDPSessionPerPort,
+		MaxUDPResolveCacheEntries: cfg.RT.MaxUDPResolveCacheEntries,
+		HandshakeMaxConcurrent:    cfg.RT.HandshakeMaxConcurrent,
+	})
 	if err != nil {
 		log.Fatal("init runtime driver failed", logger.Err(err))
 	}
-	rt := runtime.NewMemoryManagerWithDriver(log, drv, cfg.RT.ReconcileWorkers)
+	rt := runtime.NewMemoryManagerWithDriver(log, drv, resolveReconcileWorkers(cfg.RT.ReconcileWorkers))
 	svc := transfer.NewService(cfg, configPath, log, apiClient, rt, up, version)
 
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
@@ -82,6 +88,34 @@ func main() {
 		os.Exit(1)
 	}
 	log.Info("node service stopped")
+}
+
+func buildHTTPClient(cfg config.APIConfig) *http.Client {
+	transport := &http.Transport{
+		Proxy:                 http.ProxyFromEnvironment,
+		DialContext:           (&net.Dialer{Timeout: cfg.TransportDialTimeout, KeepAlive: cfg.TransportKeepAlive}).DialContext,
+		ForceAttemptHTTP2:     true,
+		MaxIdleConns:          cfg.TransportMaxIdleConns,
+		MaxIdleConnsPerHost:   cfg.TransportMaxIdlePerHost,
+		IdleConnTimeout:       cfg.TransportIdleConnTimeout,
+		TLSHandshakeTimeout:   cfg.TransportTLSHandshake,
+		ExpectContinueTimeout: cfg.TransportExpectContinue,
+	}
+	return &http.Client{Timeout: cfg.Timeout, Transport: transport}
+}
+
+func resolveReconcileWorkers(configured int) int {
+	if configured > 0 {
+		return configured
+	}
+	v := goRuntime.GOMAXPROCS(0) * 2
+	if v < 4 {
+		v = 4
+	}
+	if v > 64 {
+		v = 64
+	}
+	return v
 }
 
 func parseFlags() (configPath string, logLevel string, logFormat string, showVersion bool) {

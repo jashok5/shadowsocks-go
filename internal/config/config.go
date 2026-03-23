@@ -40,13 +40,20 @@ type NodeConfig struct {
 }
 
 type APIConfig struct {
-	Interface       string        `mapstructure:"interface"`
-	URL             string        `mapstructure:"url"`
-	Token           string        `mapstructure:"token"`
-	Timeout         time.Duration `mapstructure:"timeout"`
-	RetryMax        int           `mapstructure:"retry_max"`
-	RetryBackoff    time.Duration `mapstructure:"retry_backoff"`
-	RetryMaxBackoff time.Duration `mapstructure:"retry_max_backoff"`
+	Interface                string        `mapstructure:"interface"`
+	URL                      string        `mapstructure:"url"`
+	Token                    string        `mapstructure:"token"`
+	Timeout                  time.Duration `mapstructure:"timeout"`
+	RetryMax                 int           `mapstructure:"retry_max"`
+	RetryBackoff             time.Duration `mapstructure:"retry_backoff"`
+	RetryMaxBackoff          time.Duration `mapstructure:"retry_max_backoff"`
+	TransportDialTimeout     time.Duration `mapstructure:"transport_dial_timeout"`
+	TransportKeepAlive       time.Duration `mapstructure:"transport_keep_alive"`
+	TransportMaxIdleConns    int           `mapstructure:"transport_max_idle_conns"`
+	TransportMaxIdlePerHost  int           `mapstructure:"transport_max_idle_per_host"`
+	TransportIdleConnTimeout time.Duration `mapstructure:"transport_idle_conn_timeout"`
+	TransportTLSHandshake    time.Duration `mapstructure:"transport_tls_handshake_timeout"`
+	TransportExpectContinue  time.Duration `mapstructure:"transport_expect_continue_timeout"`
 }
 
 type SyncConfig struct {
@@ -61,13 +68,16 @@ type LogConfig struct {
 }
 
 type RuntimeConfig struct {
-	Driver              string           `mapstructure:"driver"`
-	ReconcileWorkers    int              `mapstructure:"reconcile_workers"`
-	OnUnsupportedCipher string           `mapstructure:"on_unsupported_cipher"`
-	DialTimeout         time.Duration    `mapstructure:"dial_timeout"`
-	DNSPreferIPv4       bool             `mapstructure:"dns_prefer_ipv4"`
-	DNSResolver         string           `mapstructure:"dns_resolver"`
-	SwitchRule          SwitchRuleConfig `mapstructure:"switchrule"`
+	Driver                    string           `mapstructure:"driver"`
+	ReconcileWorkers          int              `mapstructure:"reconcile_workers"`
+	HandshakeMaxConcurrent    int              `mapstructure:"handshake_max_concurrent"`
+	OnUnsupportedCipher       string           `mapstructure:"on_unsupported_cipher"`
+	DialTimeout               time.Duration    `mapstructure:"dial_timeout"`
+	DNSPreferIPv4             bool             `mapstructure:"dns_prefer_ipv4"`
+	DNSResolver               string           `mapstructure:"dns_resolver"`
+	MaxUDPSessionPerPort      int              `mapstructure:"max_udp_session_per_port"`
+	MaxUDPResolveCacheEntries int              `mapstructure:"max_udp_resolve_cache_entries"`
+	SwitchRule                SwitchRuleConfig `mapstructure:"switchrule"`
 }
 
 type SwitchRuleConfig struct {
@@ -129,14 +139,38 @@ func (c Config) Validate() error {
 	if c.API.RetryMaxBackoff < c.API.RetryBackoff {
 		return fmt.Errorf("api.retry_max_backoff must be >= api.retry_backoff")
 	}
+	if c.API.TransportDialTimeout <= 0 {
+		return fmt.Errorf("api.transport_dial_timeout must be > 0")
+	}
+	if c.API.TransportKeepAlive <= 0 {
+		return fmt.Errorf("api.transport_keep_alive must be > 0")
+	}
+	if c.API.TransportMaxIdleConns <= 0 {
+		return fmt.Errorf("api.transport_max_idle_conns must be > 0")
+	}
+	if c.API.TransportMaxIdlePerHost <= 0 {
+		return fmt.Errorf("api.transport_max_idle_per_host must be > 0")
+	}
+	if c.API.TransportIdleConnTimeout <= 0 {
+		return fmt.Errorf("api.transport_idle_conn_timeout must be > 0")
+	}
+	if c.API.TransportTLSHandshake <= 0 {
+		return fmt.Errorf("api.transport_tls_handshake_timeout must be > 0")
+	}
+	if c.API.TransportExpectContinue <= 0 {
+		return fmt.Errorf("api.transport_expect_continue_timeout must be > 0")
+	}
 	if c.Sync.FailureBaseWait <= 0 {
 		return fmt.Errorf("sync.failure_base_wait must be > 0")
 	}
 	if c.Sync.FailureMaxWait < c.Sync.FailureBaseWait {
 		return fmt.Errorf("sync.failure_max_wait must be >= sync.failure_base_wait")
 	}
-	if c.RT.ReconcileWorkers <= 0 {
-		return fmt.Errorf("runtime.reconcile_workers must be > 0")
+	if c.RT.ReconcileWorkers < 0 {
+		return fmt.Errorf("runtime.reconcile_workers must be >= 0")
+	}
+	if c.RT.HandshakeMaxConcurrent < 0 {
+		return fmt.Errorf("runtime.handshake_max_concurrent must be >= 0")
 	}
 	switch strings.ToLower(strings.TrimSpace(c.RT.OnUnsupportedCipher)) {
 	case "", "skip", "fail":
@@ -145,6 +179,12 @@ func (c Config) Validate() error {
 	}
 	if c.RT.DialTimeout <= 0 {
 		return fmt.Errorf("runtime.dial_timeout must be > 0")
+	}
+	if c.RT.MaxUDPSessionPerPort <= 0 {
+		return fmt.Errorf("runtime.max_udp_session_per_port must be > 0")
+	}
+	if c.RT.MaxUDPResolveCacheEntries <= 0 {
+		return fmt.Errorf("runtime.max_udp_resolve_cache_entries must be > 0")
 	}
 	switch strings.ToLower(strings.TrimSpace(c.RT.SwitchRule.Mode)) {
 	case "", "none", "expr":
@@ -202,17 +242,27 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("api.retry_max", 2)
 	v.SetDefault("api.retry_backoff", "500ms")
 	v.SetDefault("api.retry_max_backoff", "5s")
+	v.SetDefault("api.transport_dial_timeout", "5s")
+	v.SetDefault("api.transport_keep_alive", "30s")
+	v.SetDefault("api.transport_max_idle_conns", 200)
+	v.SetDefault("api.transport_max_idle_per_host", 64)
+	v.SetDefault("api.transport_idle_conn_timeout", "90s")
+	v.SetDefault("api.transport_tls_handshake_timeout", "5s")
+	v.SetDefault("api.transport_expect_continue_timeout", "1s")
 
 	v.SetDefault("sync.update_interval", "60s")
 	v.SetDefault("sync.failure_base_wait", "3s")
 	v.SetDefault("sync.failure_max_wait", "60s")
 
 	v.SetDefault("runtime.driver", "mock")
-	v.SetDefault("runtime.reconcile_workers", 8)
+	v.SetDefault("runtime.reconcile_workers", 0)
+	v.SetDefault("runtime.handshake_max_concurrent", 0)
 	v.SetDefault("runtime.on_unsupported_cipher", "skip")
 	v.SetDefault("runtime.dial_timeout", "8s")
 	v.SetDefault("runtime.dns_prefer_ipv4", false)
 	v.SetDefault("runtime.dns_resolver", "")
+	v.SetDefault("runtime.max_udp_session_per_port", 2048)
+	v.SetDefault("runtime.max_udp_resolve_cache_entries", 4096)
 	v.SetDefault("runtime.switchrule.enabled", false)
 	v.SetDefault("runtime.switchrule.mode", "none")
 	v.SetDefault("runtime.switchrule.expr", "")

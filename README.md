@@ -118,6 +118,13 @@ log:
 - `api.retry_max`：单次 API 调用最大重试次数（不含首次）
 - `api.retry_backoff`：重试基础退避时间
 - `api.retry_max_backoff`：重试退避最大上限
+- `api.transport_dial_timeout`：HTTP 连接建立超时
+- `api.transport_keep_alive`：HTTP 长连接保活间隔
+- `api.transport_max_idle_conns`：全局最大空闲连接数
+- `api.transport_max_idle_per_host`：每个主机最大空闲连接数
+- `api.transport_idle_conn_timeout`：空闲连接超时时间
+- `api.transport_tls_handshake_timeout`：TLS 握手超时时间
+- `api.transport_expect_continue_timeout`：`Expect: 100-continue` 等待超时时间
 - `sync.update_interval`：同步周期
 - `sync.failure_base_wait`：同步失败后的基础退避
 - `sync.failure_max_wait`：同步失败退避上限
@@ -127,11 +134,14 @@ log:
 - `update.timeout`：更新检查/下载请求超时
 - `update.allow_prerelease`：是否允许预发布版本参与更新
 - `runtime.driver`：运行时驱动，`mock`、`ss` 或 `ssr`
-- `runtime.reconcile_workers`：端口收敛并发 worker 数
+- `runtime.reconcile_workers`：端口收敛并发 worker 数（`0` 表示按 CPU 自适应）
+- `runtime.handshake_max_concurrent`：握手并发上限（`0` 表示按 CPU 自适应）
 - `runtime.on_unsupported_cipher`：不支持加密算法时策略，`skip`（跳过用户）或 `fail`（当前同步失败）
 - `runtime.dial_timeout`：TCP/UDP 上游目标连接超时
 - `runtime.dns_prefer_ipv4`：上游解析时优先 IPv4
 - `runtime.dns_resolver`：指定 DNS 服务器（如 `1.1.1.1:53`，为空则用系统解析）
+- `runtime.max_udp_session_per_port`：每个监听端口可缓存的 UDP 会话上限（超过上限会按 LRU 近似策略淘汰旧会话，防止异常流量导致内存膨胀）
+- `runtime.max_udp_resolve_cache_entries`：UDP 目标地址解析缓存条目上限（超过上限会淘汰较旧条目，防止解析缓存无界增长）
 - `runtime.switchrule.enabled`：启用用户过滤规则
 - `runtime.switchrule.mode`：过滤模式，`none` 或 `expr`
 - `runtime.switchrule.expr`：表达式模式（示例：`is_multi_user==1 && method==chacha20-ietf`）

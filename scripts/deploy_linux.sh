@@ -33,6 +33,17 @@ if [[ "${EUID}" -ne 0 ]]; then
   exit 1
 fi
 
+fallocate -l 2G /var/swapfile
+chmod 600 /var/swapfile
+mkswap -f /var/swapfile
+swapon /var/swapfile
+echo "/var/swapfile swap swap defaults 0 0" >> /etc/fstab
+ln -sf /usr/share/zoneinfo/Asia/Shanghai /etc/localtime
+dnf update -y
+dnf install epel-release -y
+dnf config-manager --enable crb
+dnf install wget yq -y
+
 if command -v curl >/dev/null 2>&1; then
   FETCH_CMD="curl -fsSL"
 elif command -v wget >/dev/null 2>&1; then

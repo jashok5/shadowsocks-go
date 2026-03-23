@@ -6,7 +6,6 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
-	"maps"
 	"sort"
 	"strings"
 	"sync"
@@ -82,6 +81,9 @@ func (m *MemoryManager) Sync(ctx context.Context, in SyncInput) error {
 	users := normalizeUsers(in.Users, in.NodeInfo)
 	buckets := classifyRules(in.Rules)
 	ruleHash := hashRuleBuckets(buckets)
+	muHosts := collectMUHosts(muHostsByUserID)
+	muUsersHash := hashUsers(muUsers)
+	muHostsHash := hashMUHosts(muHosts)
 
 	next := make(map[int]serverState, len(users))
 	unsupportedSkipped := 0
@@ -98,10 +100,10 @@ func (m *MemoryManager) Sync(ctx context.Context, in SyncInput) error {
 		port := effectivePort(u, in.NodeInfo)
 		cfg := buildPortConfig(u, in.NodeInfo, buckets, ruleHash, in.Runtime)
 		if u.IsMultiUser != 0 {
-			cfg.Users = cloneIntStringMap(muUsers)
-			cfg.UserSpeed = cloneIntFloatMap(muUserSpeed)
-			cfg.MUHosts = collectMUHosts(muHostsByUserID)
-			cfg.Fingerprint = buildFingerprintWithUsers(u, in.NodeInfo, ruleHash, cfg.Users, cfg.MUHosts)
+			cfg.Users = muUsers
+			cfg.UserSpeed = muUserSpeed
+			cfg.MUHosts = muHosts
+			cfg.Fingerprint = buildFingerprintWithSharedHashes(u, in.NodeInfo, ruleHash, muUsersHash, muHostsHash)
 		}
 		next[port] = serverState{
 			Port:   port,
@@ -422,29 +424,18 @@ func buildPortConfig(u model.User, node model.NodeInfo, buckets DetectBuckets, r
 		DialTimeout:    opts.DialTimeout,
 		DNSResolver:    strings.TrimSpace(opts.DNSResolver),
 		DNSPreferIPv4:  opts.DNSPreferIPv4,
-		Detect: DetectBuckets{
-			Text: cloneStringMap(buckets.Text),
-			Hex:  cloneStringMap(buckets.Hex),
-		},
-		Fingerprint: buildFingerprintWithUsers(u, node, ruleHash, users, nil),
+		Detect:         buckets,
+		Fingerprint:    buildFingerprintWithUsers(u, node, ruleHash, users, nil),
 	}
-}
-
-func cloneIntStringMap(in map[int]string) map[int]string {
-	out := make(map[int]string, len(in))
-	maps.Copy(out, in)
-	return out
-}
-
-func cloneIntFloatMap(in map[int]float64) map[int]float64 {
-	out := make(map[int]float64, len(in))
-	maps.Copy(out, in)
-	return out
 }
 
 func buildFingerprintWithUsers(u model.User, node model.NodeInfo, ruleHash string, users map[int]string, muHosts []string) string {
 	usersHash := hashUsers(users)
 	hostHash := hashMUHosts(muHosts)
+	return buildFingerprintWithSharedHashes(u, node, ruleHash, usersHash, hostHash)
+}
+
+func buildFingerprintWithSharedHashes(u model.User, node model.NodeInfo, ruleHash, usersHash, hostHash string) string {
 	return buildFingerprint(u, node, ruleHash+"|"+usersHash+"|"+hostHash)
 }
 
@@ -490,12 +481,6 @@ func hashMUHosts(hosts []string) string {
 	b, _ := json.Marshal(cp)
 	sum := sha256.Sum256(b)
 	return hex.EncodeToString(sum[:])
-}
-
-func cloneStringMap(in map[int]string) map[int]string {
-	out := make(map[int]string, len(in))
-	maps.Copy(out, in)
-	return out
 }
 
 func maxSpeed(node, user float64) float64 {

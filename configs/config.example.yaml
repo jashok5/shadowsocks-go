@@ -13,6 +13,13 @@ api:
   retry_max: 2
   retry_backoff: 500ms
   retry_max_backoff: 5s
+  transport_dial_timeout: 5s
+  transport_keep_alive: 30s
+  transport_max_idle_conns: 200
+  transport_max_idle_per_host: 64
+  transport_idle_conn_timeout: 90s
+  transport_tls_handshake_timeout: 5s
+  transport_expect_continue_timeout: 1s
 
 sync:
   update_interval: 60s
@@ -21,11 +28,14 @@ sync:
 
 runtime:
   driver: ssr
-  reconcile_workers: 8
+  reconcile_workers: 0
+  handshake_max_concurrent: 0
   on_unsupported_cipher: skip
   dial_timeout: 8s
-  dns_prefer_ipv4: false
-  dns_resolver: ""
+  dns_prefer_ipv4: true
+  dns_resolver: "8.8.8.8:53"
+  max_udp_session_per_port: 2048
+  max_udp_resolve_cache_entries: 4096
   switchrule:
     enabled: false
     mode: none
@@ -44,7 +54,7 @@ security:
 update:
   enabled: true
   repository: jashok5/shadowsocks-go
-  check_interval: 1h
+  check_interval: 30m
   timeout: 30s
   allow_prerelease: false
 

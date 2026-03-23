@@ -25,19 +25,20 @@ import (
 )
 
 type Service struct {
-	cfg         config.Config
-	configPath  string
-	log         *zap.Logger
-	api         *api.Client
-	runtime     runtime.Manager
-	updater     *updater.Updater
-	version     string
-	nextUpdate  time.Time
-	autoBlock   *autoblock.Service
-	abCancel    context.CancelFunc
-	abDone      chan struct{}
-	lastTraffic map[int]model.PortTransfer
-	failCount   int64
+	cfg           config.Config
+	configPath    string
+	log           *zap.Logger
+	api           *api.Client
+	runtime       runtime.Manager
+	updater       *updater.Updater
+	version       string
+	nextUpdate    time.Time
+	autoBlock     *autoblock.Service
+	abCancel      context.CancelFunc
+	abDone        chan struct{}
+	lastTraffic   map[int]model.PortTransfer
+	failCount     int64
+	configModTime time.Time
 }
 
 var ErrRestartRequired = errors.New("restart required after update")
@@ -50,15 +51,16 @@ func NewService(cfg config.Config, configPath string, log *zap.Logger, client *a
 		ab = autoblock.New(log, cfg.Security.AutoBlock, client, rt)
 	}
 	return &Service{
-		cfg:         cfg,
-		configPath:  configPath,
-		log:         log,
-		api:         client,
-		runtime:     rt,
-		updater:     up,
-		version:     strings.TrimSpace(currentVersion),
-		autoBlock:   ab,
-		lastTraffic: make(map[int]model.PortTransfer),
+		cfg:           cfg,
+		configPath:    configPath,
+		log:           log,
+		api:           client,
+		runtime:       rt,
+		updater:       up,
+		version:       strings.TrimSpace(currentVersion),
+		autoBlock:     ab,
+		lastTraffic:   make(map[int]model.PortTransfer),
+		configModTime: readConfigModTime(configPath),
 	}
 }
 
@@ -242,6 +244,12 @@ func (s *Service) syncOnce(ctx context.Context) error {
 				maxDropTCP := int64(0)
 				maxDropUDP := int64(0)
 				activeTCP := int64(0)
+				totalSessionSize := 0
+				totalResolveSize := 0
+				totalSessionHit := int64(0)
+				totalSessionMiss := int64(0)
+				totalResolveHit := int64(0)
+				totalResolveMiss := int64(0)
 				for _, st := range stats {
 					activeTCP += st.ActiveTCP
 					if st.TCPDrop > maxDropTCP {
@@ -250,8 +258,27 @@ func (s *Service) syncOnce(ctx context.Context) error {
 					if st.UDPDrop > maxDropUDP {
 						maxDropUDP = st.UDPDrop
 					}
+					totalSessionSize += st.UDPSessionCache.Size
+					totalResolveSize += st.UDPResolveCache.Size
+					totalSessionHit += st.UDPSessionCache.Hits
+					totalSessionMiss += st.UDPSessionCache.Misses
+					totalResolveHit += st.UDPResolveCache.Hits
+					totalResolveMiss += st.UDPResolveCache.Misses
 				}
-				s.log.Debug("runtime pressure", zap.Int("ports", len(stats)), zap.Int64("active_tcp", activeTCP), zap.Int64("max_tcp_drop", maxDropTCP), zap.Int64("max_udp_drop", maxDropUDP))
+				s.log.Debug("runtime pressure", zap.Int("ports", len(stats)), zap.Int64("active_tcp", activeTCP), zap.Int64("max_tcp_drop", maxDropTCP), zap.Int64("max_udp_drop", maxDropUDP), zap.Int("udp_session_cache_size", totalSessionSize), zap.Int("udp_resolve_cache_size", totalResolveSize), zap.Int64("udp_session_hit", totalSessionHit), zap.Int64("udp_session_miss", totalSessionMiss), zap.Int64("udp_resolve_hit", totalResolveHit), zap.Int64("udp_resolve_miss", totalResolveMiss))
+			}
+		} else if ssr, ok := ds.Driver().(*runtime.SSRDriver); ok {
+			stats := ssr.CacheStats()
+			if len(stats) > 0 {
+				totalResolveSize := 0
+				totalResolveHit := int64(0)
+				totalResolveMiss := int64(0)
+				for _, st := range stats {
+					totalResolveSize += st.UDPResolveCache.Size
+					totalResolveHit += st.UDPResolveCache.Hits
+					totalResolveMiss += st.UDPResolveCache.Misses
+				}
+				s.log.Debug("runtime pressure", zap.Int("ports", len(stats)), zap.Int("udp_resolve_cache_size", totalResolveSize), zap.Int64("udp_resolve_hit", totalResolveHit), zap.Int64("udp_resolve_miss", totalResolveMiss))
 			}
 		}
 	}
@@ -344,6 +371,10 @@ func (s *Service) reloadConfigIfNeeded() {
 	if strings.TrimSpace(s.configPath) == "" {
 		return
 	}
+	mod := readConfigModTime(s.configPath)
+	if !mod.IsZero() && !s.configModTime.IsZero() && !mod.After(s.configModTime) {
+		return
+	}
 	cfg, err := config.Load(s.configPath)
 	if err != nil {
 		s.log.Warn("reload config failed, keep old config", logger.Err(err))
@@ -360,6 +391,20 @@ func (s *Service) reloadConfigIfNeeded() {
 
 	s.api.UpdateRetryPolicy(cfg.API.RetryMax, cfg.API.RetryBackoff, cfg.API.RetryMaxBackoff)
 	s.cfg = cfg
+	if !mod.IsZero() {
+		s.configModTime = mod
+	}
+}
+
+func readConfigModTime(path string) time.Time {
+	if strings.TrimSpace(path) == "" {
+		return time.Time{}
+	}
+	st, err := os.Stat(path)
+	if err != nil {
+		return time.Time{}
+	}
+	return st.ModTime()
 }
 
 func (s *Service) checkUpdateIfNeeded(ctx context.Context) error {
@@ -393,9 +438,11 @@ func (s *Service) checkUpdateIfNeeded(ctx context.Context) error {
 
 func (s *Service) pushTraffic(ctx context.Context, current map[int]model.PortTransfer, userCurrent map[int]model.PortTransfer, portUser map[int]int) error {
 	if len(userCurrent) > 0 {
+		activeKeys := make(map[int]struct{}, len(userCurrent))
 		payload := make([]model.UserTraffic, 0, len(userCurrent))
 		for uid, now := range userCurrent {
 			key := -uid
+			activeKeys[key] = struct{}{}
 			last := s.lastTraffic[key]
 			du := now.Upload - last.Upload
 			dd := now.Download - last.Download
@@ -409,6 +456,7 @@ func (s *Service) pushTraffic(ctx context.Context, current map[int]model.PortTra
 			s.lastTraffic[key] = model.PortTransfer{Upload: now.Upload, Download: now.Download}
 			payload = append(payload, model.UserTraffic{U: du, D: dd, UserID: uid})
 		}
+		s.pruneLastTraffic(activeKeys)
 		if len(payload) > 0 {
 			s.log.Debug("post user traffic", zap.String("mode", "uid"), zap.Int("count", len(payload)), zap.Any("payload", payload))
 			return s.api.PostUserTraffic(ctx, payload)
@@ -417,8 +465,10 @@ func (s *Service) pushTraffic(ctx context.Context, current map[int]model.PortTra
 		return nil
 	}
 
+	activeKeys := make(map[int]struct{}, len(current))
 	payload := make([]model.UserTraffic, 0, len(current))
 	for port, now := range current {
+		activeKeys[port] = struct{}{}
 		uid, ok := portUser[port]
 		if !ok {
 			continue
@@ -436,12 +486,25 @@ func (s *Service) pushTraffic(ctx context.Context, current map[int]model.PortTra
 		s.lastTraffic[port] = model.PortTransfer{Upload: now.Upload, Download: now.Download}
 		payload = append(payload, model.UserTraffic{U: du, D: dd, UserID: uid})
 	}
+	s.pruneLastTraffic(activeKeys)
 	if len(payload) == 0 {
 		s.log.Debug("post user traffic skipped", zap.String("mode", "port_map"), zap.Int("count", 0))
 		return nil
 	}
 	s.log.Debug("post user traffic", zap.String("mode", "port_map"), zap.Int("count", len(payload)), zap.Any("payload", payload))
 	return s.api.PostUserTraffic(ctx, payload)
+}
+
+func (s *Service) pruneLastTraffic(active map[int]struct{}) {
+	if len(s.lastTraffic) == 0 {
+		return
+	}
+	for key := range s.lastTraffic {
+		if _, ok := active[key]; ok {
+			continue
+		}
+		delete(s.lastTraffic, key)
+	}
 }
 
 func (s *Service) uptimeText() string {

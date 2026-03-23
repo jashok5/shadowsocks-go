@@ -7,7 +7,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"maps"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -441,8 +440,17 @@ func mergeYAML(baseContent []byte, overrideContent []byte) ([]byte, error) {
 			return nil, fmt.Errorf("decode current config: %w", err)
 		}
 	}
-
-	merged := deepMergeMaps(base, override)
+	merged := base
+	preservePaths := [][]string{
+		{"node", "id"},
+		{"api", "url"},
+		{"api", "token"},
+	}
+	for _, p := range preservePaths {
+		if v, ok := getMapPath(override, p); ok {
+			setMapPath(merged, p, v)
+		}
+	}
 	out, err := yaml.Marshal(merged)
 	if err != nil {
 		return nil, fmt.Errorf("marshal merged config: %w", err)
@@ -461,19 +469,49 @@ func decodeYAMLMap(content []byte) (map[string]any, error) {
 	return out, nil
 }
 
-func deepMergeMaps(base map[string]any, override map[string]any) map[string]any {
-	merged := make(map[string]any, len(base))
-	maps.Copy(merged, base)
-	for k, v := range override {
-		baseMap, baseIsMap := merged[k].(map[string]any)
-		overrideMap, overrideIsMap := v.(map[string]any)
-		if baseIsMap && overrideIsMap {
-			merged[k] = deepMergeMaps(baseMap, overrideMap)
+func getMapPath(root map[string]any, path []string) (any, bool) {
+	if len(path) == 0 {
+		return nil, false
+	}
+	cur := root
+	for i := 0; i < len(path)-1; i++ {
+		next, ok := cur[path[i]]
+		if !ok {
+			return nil, false
+		}
+		nextMap, ok := next.(map[string]any)
+		if !ok {
+			return nil, false
+		}
+		cur = nextMap
+	}
+	v, ok := cur[path[len(path)-1]]
+	return v, ok
+}
+
+func setMapPath(root map[string]any, path []string, value any) {
+	if len(path) == 0 {
+		return
+	}
+	cur := root
+	for i := 0; i < len(path)-1; i++ {
+		next, ok := cur[path[i]]
+		if !ok {
+			nm := make(map[string]any)
+			cur[path[i]] = nm
+			cur = nm
 			continue
 		}
-		merged[k] = v
+		nextMap, ok := next.(map[string]any)
+		if !ok {
+			nm := make(map[string]any)
+			cur[path[i]] = nm
+			cur = nm
+			continue
+		}
+		cur = nextMap
 	}
-	return merged
+	cur[path[len(path)-1]] = value
 }
 
 func copyFile(src string, dst string, mode os.FileMode) error {

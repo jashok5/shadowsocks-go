@@ -25,6 +25,7 @@ type Client struct {
 	mu         sync.RWMutex
 	httpClient *http.Client
 	baseURL    string
+	baseParsed *url.URL
 	token      string
 	nodeID     int
 	retryMax   int
@@ -34,9 +35,12 @@ type Client struct {
 }
 
 func NewClient(httpClient *http.Client, cfg config.APIConfig) *Client {
+	baseURL := strings.TrimRight(cfg.URL, "/") + "/mod_mu"
+	parsed, _ := url.Parse(baseURL)
 	return &Client{
 		httpClient: httpClient,
-		baseURL:    strings.TrimRight(cfg.URL, "/") + "/mod_mu",
+		baseURL:    baseURL,
+		baseParsed: parsed,
 		token:      cfg.Token,
 		retryMax:   cfg.RetryMax,
 		backoff:    cfg.RetryBackoff,
@@ -225,9 +229,15 @@ func (c *Client) post(ctx context.Context, uri string, params map[string]string,
 }
 
 func (c *Client) buildURL(uri string, params map[string]string) (string, error) {
-	u, err := url.Parse(c.baseURL)
-	if err != nil {
-		return "", fmt.Errorf("parse base url: %w", err)
+	var u url.URL
+	if c.baseParsed != nil {
+		u = *c.baseParsed
+	} else {
+		parsed, err := url.Parse(c.baseURL)
+		if err != nil {
+			return "", fmt.Errorf("parse base url: %w", err)
+		}
+		u = *parsed
 	}
 	u.Path = path.Join(u.Path, uri)
 	q := u.Query()
@@ -240,7 +250,11 @@ func (c *Client) buildURL(uri string, params map[string]string) (string, error) 
 }
 
 func parseResponse(r io.Reader, out any) error {
-	var resp model.APIResponse[json.RawMessage]
+	type apiEnvelope struct {
+		Ret  int             `json:"ret"`
+		Data json.RawMessage `json:"data"`
+	}
+	var resp apiEnvelope
 	if err := json.NewDecoder(r).Decode(&resp); err != nil {
 		return fmt.Errorf("decode response: %w", err)
 	}
@@ -250,7 +264,7 @@ func parseResponse(r io.Reader, out any) error {
 	if out == nil {
 		return nil
 	}
-	if len(resp.Data) == 0 || string(resp.Data) == "null" {
+	if len(resp.Data) == 0 || bytes.Equal(bytes.TrimSpace(resp.Data), []byte("null")) {
 		return nil
 	}
 	if err := json.Unmarshal(resp.Data, out); err != nil {
