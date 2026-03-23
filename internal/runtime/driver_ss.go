@@ -28,6 +28,7 @@ const (
 	maxUDPSessionPerPort        = 2048
 	maxSSUDPResolveCacheEntries = 4096
 	udpSessionIdleTTL           = 30 * time.Second
+	udpSessionReadTimeout       = 30 * time.Second
 	udpResolveIdleTTL           = 30 * time.Second
 	udpSessionSweepEvery        = 10 * time.Second
 )
@@ -674,7 +675,7 @@ func (d *SSDriver) startUDPSessionReader(rt *ssPortRuntime, port int, sess *udpS
 			if conn == nil || clientAddr == nil || len(srcAddr) == 0 {
 				return
 			}
-			_ = conn.SetReadDeadline(time.Now().Add(4 * time.Second))
+			_ = conn.SetReadDeadline(time.Now().Add(udpSessionReadTimeout))
 			nr, rerr := conn.Read(buf)
 			if nr > 0 {
 				resp := acquireUDPPacketBuf(len(srcAddr) + nr)
@@ -687,7 +688,12 @@ func (d *SSDriver) startUDPSessionReader(rt *ssPortRuntime, port int, sess *udpS
 			}
 			if rerr != nil {
 				if ne, ok := errors.AsType[net.Error](rerr); ok && ne.Timeout() {
-					return
+					select {
+					case <-rt.ctx.Done():
+						return
+					default:
+						continue
+					}
 				}
 				return
 			}
