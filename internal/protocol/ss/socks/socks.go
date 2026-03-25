@@ -48,14 +48,14 @@ func readAddr(r io.Reader, b []byte) (Addr, error) {
 	if len(b) < MaxAddrLen {
 		return nil, io.ErrShortBuffer
 	}
-	_, err := io.ReadFull(r, b[:1]) // read 1st byte for address type
+	_, err := io.ReadFull(r, b[:1])
 	if err != nil {
 		return nil, err
 	}
 
 	switch b[0] {
 	case AtypDomainName:
-		_, err = io.ReadFull(r, b[1:2]) // read 2nd byte for domain length
+		_, err = io.ReadFull(r, b[1:2])
 		if err != nil {
 			return nil, err
 		}

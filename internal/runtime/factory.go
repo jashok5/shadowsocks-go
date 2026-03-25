@@ -12,6 +12,7 @@ type DriverTuning struct {
 	MaxUDPResolveCacheEntries int
 	HandshakeMaxConcurrent    int
 	PerIPHandshakeMax         int
+	UDPAssocErrorDeltaWarn    int
 }
 
 func (t DriverTuning) maxUDPSessionPerPortOr(def int) int {
@@ -31,6 +32,13 @@ func (t DriverTuning) maxUDPResolveCacheEntriesOr(def int) int {
 func (t DriverTuning) handshakeMaxConcurrentOr(def int) int {
 	if t.HandshakeMaxConcurrent > 0 {
 		return t.HandshakeMaxConcurrent
+	}
+	return def
+}
+
+func (t DriverTuning) udpAssocErrorDeltaWarnOr(def int) int {
+	if t.UDPAssocErrorDeltaWarn > 0 {
+		return t.UDPAssocErrorDeltaWarn
 	}
 	return def
 }

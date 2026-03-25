@@ -20,13 +20,11 @@ func PutBuf(buf []byte) {
 	if cap(buf) < BufferSize {
 		return
 	}
-	b := buf[:BufferSize]
-	bufPool.Put(&b)
+	bufPool.Put(new(buf[:BufferSize]))
 }
 
 func createAllocFunc(size int) func() any {
 	return func() any {
-		b := make([]byte, size)
-		return &b
+		return new(make([]byte, size))
 	}
 }

@@ -67,6 +67,7 @@ func main() {
 		MaxUDPResolveCacheEntries: cfg.RT.MaxUDPResolveCacheEntries,
 		HandshakeMaxConcurrent:    cfg.RT.HandshakeMaxConcurrent,
 		PerIPHandshakeMax:         cfg.RT.PerIPHandshakeMax,
+		UDPAssocErrorDeltaWarn:    cfg.RT.UDPAssocErrorDeltaWarn,
 	})
 	if err != nil {
 		log.Fatal("init runtime driver failed", logger.Err(err))
@@ -130,10 +131,7 @@ func resolveReconcileWorkers(configured int) int {
 	if configured > 0 {
 		return configured
 	}
-	v := goRuntime.GOMAXPROCS(0) * 2
-	if v < 4 {
-		v = 4
-	}
+	v := max(goRuntime.GOMAXPROCS(0)*2, 4)
 	if v > 64 {
 		v = 64
 	}

@@ -84,6 +84,7 @@ type RuntimeConfig struct {
 	DNSResolver               string           `mapstructure:"dns_resolver"`
 	MaxUDPSessionPerPort      int              `mapstructure:"max_udp_session_per_port"`
 	MaxUDPResolveCacheEntries int              `mapstructure:"max_udp_resolve_cache_entries"`
+	UDPAssocErrorDeltaWarn    int              `mapstructure:"udp_assoc_error_delta_warn"`
 	SwitchRule                SwitchRuleConfig `mapstructure:"switchrule"`
 }
 
@@ -196,6 +197,9 @@ func (c Config) Validate() error {
 	if c.RT.MaxUDPResolveCacheEntries <= 0 {
 		return fmt.Errorf("runtime.max_udp_resolve_cache_entries must be > 0")
 	}
+	if c.RT.UDPAssocErrorDeltaWarn <= 0 {
+		return fmt.Errorf("runtime.udp_assoc_error_delta_warn must be > 0")
+	}
 	switch strings.ToLower(strings.TrimSpace(c.RT.SwitchRule.Mode)) {
 	case "", "none", "expr":
 	default:
@@ -274,6 +278,7 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("runtime.dns_resolver", "")
 	v.SetDefault("runtime.max_udp_session_per_port", 2048)
 	v.SetDefault("runtime.max_udp_resolve_cache_entries", 4096)
+	v.SetDefault("runtime.udp_assoc_error_delta_warn", 1)
 	v.SetDefault("runtime.switchrule.enabled", false)
 	v.SetDefault("runtime.switchrule.mode", "none")
 	v.SetDefault("runtime.switchrule.expr", "")

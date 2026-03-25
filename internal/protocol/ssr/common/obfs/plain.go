@@ -10,7 +10,6 @@ type plain struct {
 	Method string
 }
 
-// NewPlain construct a new plain and initliza default value
 func NewPlain(method string) (Plain, error) {
 	return &plain{
 		Method: method,
@@ -49,7 +48,6 @@ func (p *plain) ClientEncode(buf []byte) ([]byte, error) {
 	return buf, nil
 }
 
-//ClientDecode buffer_to_recv, is_need_to_encode_and_send_back
 func (p *plain) ClientDecode(buf []byte) ([]byte, bool, error) {
 	return buf, false, nil
 }

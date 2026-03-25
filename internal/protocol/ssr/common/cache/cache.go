@@ -1,8 +1,8 @@
 package cache
 
 import (
-	"runtime"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -11,8 +11,9 @@ type Cache struct {
 }
 
 type cache struct {
-	mapping sync.Map
-	janitor *janitor
+	mapping      sync.Map
+	cleanupEvery time.Duration
+	nextCleanup  atomic.Int64
 }
 
 type element struct {
@@ -21,6 +22,7 @@ type element struct {
 }
 
 func (c *cache) Put(key any, payload any, ttl time.Duration) {
+	c.maybeCleanup(time.Now())
 	c.mapping.Store(key, &element{
 		Payload: payload,
 		Expired: time.Now().Add(ttl),
@@ -28,13 +30,14 @@ func (c *cache) Put(key any, payload any, ttl time.Duration) {
 }
 
 func (c *cache) Get(key any) any {
+	c.maybeCleanup(time.Now())
 	item, exist := c.mapping.Load(key)
 	if !exist {
 		return nil
 	}
 	elm := item.(*element)
-	// expired
-	if time.Since(elm.Expired) > 0 {
+
+	if time.Now().After(elm.Expired) {
 		c.mapping.Delete(key)
 		return nil
 	}
@@ -42,9 +45,10 @@ func (c *cache) Get(key any) any {
 }
 
 func (c *cache) Range(callback func(key, value any)) {
+	c.maybeCleanup(time.Now())
 	c.mapping.Range(func(k, v any) bool {
 		elm := v.(*element)
-		if time.Since(elm.Expired) > 0 {
+		if time.Now().After(elm.Expired) {
 			c.mapping.Delete(k)
 		} else {
 			callback(k, elm.Payload)
@@ -54,9 +58,10 @@ func (c *cache) Range(callback func(key, value any)) {
 }
 
 func (c *cache) cleanup() {
+	now := time.Now()
 	c.mapping.Range(func(k, v any) bool {
 		elm := v.(*element)
-		if time.Since(elm.Expired) > 0 {
+		if now.After(elm.Expired) {
 			c.mapping.Delete(k)
 		}
 		return true
@@ -71,42 +76,26 @@ func (c *cache) Size() int {
 	return result
 }
 
-type janitor struct {
-	interval time.Duration
-	stop     chan struct{}
-	stopOnce sync.Once
-}
-
-func (j *janitor) Stop() {
-	j.stopOnce.Do(func() {
-		close(j.stop)
-	})
-}
-
-func (j *janitor) process(c *cache) {
-	ticker := time.NewTicker(j.interval)
-	for {
-		select {
-		case <-ticker.C:
-			c.cleanup()
-		case <-j.stop:
-			ticker.Stop()
-			return
-		}
-	}
-}
-
 func New(interval time.Duration) *Cache {
-	j := &janitor{
-		interval: interval,
-		stop:     make(chan struct{}),
+	if interval <= 0 {
+		interval = time.Second
 	}
-	c := &cache{janitor: j}
-	go j.process(c)
-	C := &Cache{c}
+	c := &cache{cleanupEvery: interval}
+	c.nextCleanup.Store(time.Now().Add(interval).UnixNano())
+	return &Cache{c}
+}
 
-	runtime.AddCleanup(C, func(j *janitor) {
-		j.Stop()
-	}, j)
-	return C
+func (c *cache) maybeCleanup(now time.Time) {
+	if c == nil {
+		return
+	}
+	next := c.nextCleanup.Load()
+	if next != 0 && now.UnixNano() < next {
+		return
+	}
+	newNext := now.Add(c.cleanupEvery).UnixNano()
+	if !c.nextCleanup.CompareAndSwap(next, newNext) {
+		return
+	}
+	c.cleanup()
 }

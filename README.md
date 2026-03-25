@@ -85,6 +85,9 @@ runtime:
   dial_timeout: 8s
   dns_prefer_ipv4: false
   dns_resolver: ""
+  max_udp_session_per_port: 2048
+  max_udp_resolve_cache_entries: 4096
+  udp_assoc_error_delta_warn: 1
   switchrule:
     enabled: false
     mode: none
@@ -145,6 +148,7 @@ log:
 - `runtime.dns_resolver`：指定 DNS 服务器（如 `1.1.1.1:53`，为空则用系统解析）
 - `runtime.max_udp_session_per_port`：每个监听端口可缓存的 UDP 会话上限（超过上限会按 LRU 近似策略淘汰旧会话，防止异常流量导致内存膨胀）
 - `runtime.max_udp_resolve_cache_entries`：UDP 目标地址解析缓存条目上限（超过上限会淘汰较旧条目，防止解析缓存无界增长）
+- `runtime.udp_assoc_error_delta_warn`：UDP assoc reader 错误增量告警阈值（每次 snapshot/cache stats 计算当前窗口 `error delta`，达到阈值时 `Warn=true`）
 - `runtime.switchrule.enabled`：启用用户过滤规则
 - `runtime.switchrule.mode`：过滤模式，`none` 或 `expr`
 - `runtime.switchrule.expr`：表达式模式（示例：`is_multi_user==1 && method==chacha20-ietf`）

@@ -107,7 +107,7 @@ func (ss *Socks5Addr) GetAType() int {
 }
 
 func (ss *Socks5Addr) process() {
-	switch ss.AType { // address type
+	switch ss.AType {
 	case AtypDomainName:
 		ss.Address = string(ss.Raw[2 : 2+int(ss.Raw[1])])
 		ss.Port = (int(ss.Raw[2+int(ss.Raw[1])]) << 8) | int(ss.Raw[2+int(ss.Raw[1])+1])
@@ -128,14 +128,14 @@ func readAddr(r io.Reader, b []byte) (*Socks5Addr, error) {
 	if len(b) < MaxAddrLen {
 		return nil, io.ErrShortBuffer
 	}
-	_, err := io.ReadFull(r, b[:1]) // read 1st byte for address type
+	_, err := io.ReadFull(r, b[:1])
 	if err != nil {
 		return nil, err
 	}
 
 	switch b[0] {
 	case AtypDomainName:
-		_, err = io.ReadFull(r, b[1:2]) // read 2nd byte for domain length
+		_, err = io.ReadFull(r, b[1:2])
 		if err != nil {
 			return nil, err
 		}

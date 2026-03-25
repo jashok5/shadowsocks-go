@@ -1,17 +1,16 @@
 package obfs
 
 import (
-	"bytes"
 	"encoding/hex"
 	"net/http"
 	"strconv"
 	"strings"
 	"time"
 
+	"github.com/jashok5/shadowsocks-go/internal/protocol/ssr/common/log"
 	"github.com/jashok5/shadowsocks-go/internal/protocol/ssr/utils/arrayx"
 	"github.com/jashok5/shadowsocks-go/internal/protocol/ssr/utils/bytesx"
 	"github.com/jashok5/shadowsocks-go/internal/protocol/ssr/utils/randomx"
-	"github.com/sirupsen/logrus"
 )
 
 func init() {
@@ -122,7 +121,7 @@ func (h *HttpSimple) notMatchReturn(buf []byte) ([]byte, bool, bool, error) {
 	h.hasSentHeader = true
 	h.hasRecvHeader = true
 	if h.GetMethod() == "http_simple" {
-		return bytes.Repeat([]byte("E"), 2048), false, false, nil
+		return errorReply2048(), false, false, nil
 	}
 	return buf, true, false, nil
 }
@@ -130,7 +129,7 @@ func (h *HttpSimple) notMatchReturn(buf []byte) ([]byte, bool, bool, error) {
 func (h *HttpSimple) errorReturn() ([]byte, bool, bool, error) {
 	h.hasSentHeader = true
 	h.hasRecvHeader = true
-	return bytes.Repeat([]byte("E"), 2048), false, false, nil
+	return errorReply2048(), false, false, nil
 }
 
 func (h *HttpSimple) ClientEncode(buf []byte) ([]byte, error) {
@@ -216,12 +215,12 @@ func (h *HttpSimple) ServerDecode(buf []byte) ([]byte, bool, bool, error) {
 		if strMatchBegin(string(buf), "GET ") || strMatchBegin(string(buf), "POST ") {
 			if len(buf) > 65536 {
 				h.recvBuf = []byte{}
-				logrus.Warning("http_simple: over size")
+				log.Warn("http_simple: over size")
 				return h.notMatchReturn(buf)
 			}
 		} else {
 			h.recvBuf = []byte{}
-			logrus.Warning("http_simple: not match begin")
+			log.Warn("http_simple: not match begin")
 			return h.notMatchReturn(buf)
 		}
 	} else {

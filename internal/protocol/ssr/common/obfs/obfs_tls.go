@@ -9,19 +9,14 @@ import (
 	"strings"
 	"time"
 
-	"github.com/sirupsen/logrus"
-
-	"github.com/pkg/errors"
-
 	"github.com/jashok5/shadowsocks-go/internal/protocol/ssr/common/cache"
 	"github.com/jashok5/shadowsocks-go/internal/protocol/ssr/common/log"
 	"github.com/jashok5/shadowsocks-go/internal/protocol/ssr/utils/arrayx"
 	"github.com/jashok5/shadowsocks-go/internal/protocol/ssr/utils/randomx"
 	"github.com/jashok5/shadowsocks-go/internal/protocol/ssr/utils/stringx"
+	"github.com/pkg/errors"
 )
 
-// golang don't support declare constant array
-// so we use variable to replace it
 var (
 	DefaultVersion     = []byte{0x03, 0x03}
 	DefaultOverhead    = 5
@@ -98,18 +93,7 @@ func (otls *TLS) ClientEncode(buf []byte) ([]byte, error) {
 	}
 
 	if (otls.HandshakeStatus & 8) == 8 {
-		var ret []byte
-		for len(buf) > 2048 {
-			left := float64(binary.BigEndian.Uint16(randomx.RandomBytes(2))%4096 + 100)
-			right := float64(len(buf))
-			size := uint16(math.Min(left, right))
-			ret = conbineToBytes(ret, byte(0x17), otls.TLSVersion, size, buf[:size])
-			buf = buf[size:]
-		}
-		if len(buf) > 0 {
-			ret = conbineToBytes(ret, byte(0x17), otls.TLSVersion, uint16(len(buf)), buf)
-		}
-		return ret, nil
+		return otls.encodeAppDataRecords(buf), nil
 	}
 	if len(buf) > 0 {
 		otls.SendBuffer = conbineToBytes(otls.SendBuffer, byte(0x17), otls.TLSVersion, uint16(len(buf)), buf)
@@ -168,7 +152,7 @@ func (otls *TLS) ClientEncode(buf []byte) ([]byte, error) {
 		result = conbineToBytes([]byte{0x16, 0x03, 0x01}, uint16(len(result)), result)
 		return result, nil
 	} else if otls.HandshakeStatus == 1 && len(buf) == 0 {
-		data := conbineToBytes(byte(0x14), otls.TLSVersion, []byte{0x00, 0x01, 0x01}) //ChangeCipherSpec
+		data := conbineToBytes(byte(0x14), otls.TLSVersion, []byte{0x00, 0x01, 0x01})
 		data = conbineToBytes(data, byte(0x16), otls.TLSVersion, []byte{0x00, 0x20}, randomx.RandomBytes(22))
 		data = conbineToBytes(data, hmacsha1(conbineToBytes(otls.GetServerInfo().GetKey(), otls.AuthData.ClientID), data)[:10])
 		ret := conbineToBytes(data, otls.SendBuffer)
@@ -180,28 +164,17 @@ func (otls *TLS) ClientEncode(buf []byte) ([]byte, error) {
 	return []byte{}, nil
 }
 
-// ClientDecode buffer_to_recv, is_need_to_encode_and_send_back
 func (otls *TLS) ClientDecode(buf []byte) ([]byte, bool, error) {
 	if otls.HandshakeStatus == -1 {
 		return buf, false, nil
 	}
 	if otls.HandshakeStatus == 8 {
-		ret := new(bytes.Buffer)
-		otls.RecvBuffer = conbineToBytes(otls.RecvBuffer, buf)
-		for len(otls.RecvBuffer) > 5 {
-			if int(otls.RecvBuffer[0]) != 0x17 {
-				log.Error("data = %s", hex.EncodeToString(otls.RecvBuffer))
-				return nil, false, errors.New("server_decode appdata error")
-			}
-			size := binary.BigEndian.Uint16(otls.RecvBuffer[3:5])
-			if len(otls.RecvBuffer) < int(size)+5 {
-				break
-			}
-			buf = otls.RecvBuffer[5 : size+5]
-			binary.Write(ret, binary.BigEndian, buf)
-			otls.RecvBuffer = otls.RecvBuffer[size+5:]
+		data, err := otls.decodeAppDataRecords(buf, false)
+		if err != nil {
+			log.Errorw("server decode appdata error", "data", hex.EncodeToString(otls.RecvBuffer))
+			return nil, false, errors.New("server_decode appdata error")
 		}
-		return ret.Bytes(), false, nil
+		return data, false, nil
 	}
 
 	if len(buf) < 11+32+1+32 {
@@ -223,24 +196,7 @@ func (otls *TLS) ServerEncode(buf []byte) ([]byte, error) {
 		return buf, nil
 	}
 	if (otls.HandshakeStatus & 8) == 8 {
-		ret := new(bytes.Buffer)
-		for len(buf) > 2048 {
-			size := uint16(math.Min(float64(randomx.Uint16()%4096+100), float64(len(buf))))
-			binary.Write(ret, binary.BigEndian, conbineToBytes(
-				byte(0x17),
-				otls.TLSVersion,
-				size,
-				buf[:size]))
-			buf = buf[size:]
-		}
-		if len(buf) > 0 {
-			binary.Write(ret, binary.BigEndian, conbineToBytes(
-				byte(0x17),
-				otls.TLSVersion,
-				uint16(len(buf)),
-				buf))
-		}
-		return ret.Bytes(), nil
+		return otls.encodeAppDataRecords(buf), nil
 	}
 
 	otls.HandshakeStatus |= 8
@@ -266,35 +222,17 @@ func (otls *TLS) ServerEncode(buf []byte) ([]byte, error) {
 	return data, nil
 }
 
-// ServerDecode return buffer_to_recv, is_need_decrypt, is_need_to_encode_and_send_back
 func (otls *TLS) ServerDecode(buf []byte) ([]byte, bool, bool, error) {
-	//log.Debug("HandshakeStatus %d otls.RecvBufferLength %d",otls.HandshakeStatus,len(otls.RecvBuffer))
 	if otls.HandshakeStatus == -1 {
 		return buf, true, false, nil
 	}
 	if (otls.HandshakeStatus & 4) == 4 {
-		ret := new(bytes.Buffer)
-		otls.RecvBuffer = conbineToBytes(otls.RecvBuffer, buf)
-		for len(otls.RecvBuffer) > 5 {
-			if int(otls.RecvBuffer[0]) != 0x17 || int(otls.RecvBuffer[1]) != 0x03 ||
-				int(otls.RecvBuffer[2]) != 0x03 {
-				log.Error("data = %s", hex.EncodeToString(otls.RecvBuffer))
-				return nil, false, false, errors.New("server_decode appdata error")
-			}
-
-			size := binary.BigEndian.Uint16(otls.RecvBuffer[3:5])
-			if len(otls.RecvBuffer) < int(size)+5 {
-				//log.Debug("size :%d",size)
-				break
-			}
-			binary.Write(ret, binary.BigEndian, otls.RecvBuffer[5:size+5])
-			otls.RecvBuffer = otls.RecvBuffer[size+5:]
+		data, err := otls.decodeAppDataRecords(buf, true)
+		if err != nil {
+			log.Errorw("server decode appdata error", "data", hex.EncodeToString(otls.RecvBuffer))
+			return nil, false, false, errors.New("server_decode appdata error")
 		}
-
-		//if ret.Len() == 0{
-		//	log.Debug("dataLength %d, RecvBufferLength %d, retLength %d",len(buf),len(otls.RecvBuffer),ret.Len())
-		//}
-		return ret.Bytes(), true, false, nil
+		return data, true, false, nil
 	}
 
 	if (otls.HandshakeStatus & 1) == 1 {
@@ -321,7 +259,6 @@ func (otls *TLS) ServerDecode(buf []byte) ([]byte, bool, bool, error) {
 			return nil, false, false, errors.New("server_decode data error")
 		}
 		otls.RecvBuffer = verify[verifyLen+10:]
-		// status := otls.HandshakeStatus
 		otls.HandshakeStatus |= 4
 		return otls.ServerDecode([]byte{})
 	}
@@ -381,11 +318,11 @@ func (otls *TLS) ServerDecode(buf []byte) ([]byte, bool, bool, error) {
 	if otls.MaxTimeDiff > 0 &&
 		(timeDif < -otls.MaxTimeDiff ||
 			timeDif > otls.MaxTimeDiff || int32(utcTime-otls.AuthData.StartTime) < int32(otls.MaxTimeDiff/2)) {
-		logrus.WithFields(logrus.Fields{
-			"reciveUtcTime": uint32(utcTime),
-			"nowUnix":       time.Now().Unix(),
-			"timeDif":       timeDif,
-		}).Error("tls_auth wrong time")
+		log.Errorw("tls_auth wrong time",
+			"receive_utc_time", uint32(utcTime),
+			"now_unix", time.Now().Unix(),
+			"time_diff", timeDif,
+		)
 		return otls.DecodeErrorReturn(originBuf)
 	}
 
@@ -395,7 +332,7 @@ func (otls *TLS) ServerDecode(buf []byte) ([]byte, bool, bool, error) {
 	}
 
 	if otls.ClientData.Get(string(verifyId[:22])) != nil {
-		log.Info("replay attack detect, id = %s", hex.EncodeToString(verifyId))
+		log.Infow("replay attack detect", "id", hex.EncodeToString(verifyId))
 		return otls.DecodeErrorReturn(originBuf)
 	}
 
@@ -429,8 +366,41 @@ func (otls *TLS) DecodeErrorReturn(buf []byte) ([]byte, bool, bool, error) {
 	}
 	otls.Overhead = 0
 	if arrayx.FindStringInArray(otls.Plain.GetMethod(), []string{"tls1.2_ticket_auth", "tls1.2_ticket_fastauth"}) {
-		return bytes.Repeat([]byte{byte('E')}, 2048), false, false, nil
+		return errorReply2048(), false, false, nil
 	}
 
 	return buf, true, false, nil
+}
+
+func (otls *TLS) encodeAppDataRecords(buf []byte) []byte {
+	ret := make([]byte, 0, len(buf)+32)
+	for len(buf) > 2048 {
+		size := uint16(math.Min(float64(randomx.Uint16()%4096+100), float64(len(buf))))
+		ret = conbineToBytes(ret, byte(0x17), otls.TLSVersion, size, buf[:size])
+		buf = buf[size:]
+	}
+	if len(buf) > 0 {
+		ret = conbineToBytes(ret, byte(0x17), otls.TLSVersion, uint16(len(buf)), buf)
+	}
+	return ret
+}
+
+func (otls *TLS) decodeAppDataRecords(incoming []byte, strictTLS12 bool) ([]byte, error) {
+	ret := new(bytes.Buffer)
+	otls.RecvBuffer = conbineToBytes(otls.RecvBuffer, incoming)
+	for len(otls.RecvBuffer) > 5 {
+		if int(otls.RecvBuffer[0]) != 0x17 {
+			return nil, errors.New("server_decode appdata error")
+		}
+		if strictTLS12 && (int(otls.RecvBuffer[1]) != 0x03 || int(otls.RecvBuffer[2]) != 0x03) {
+			return nil, errors.New("server_decode appdata error")
+		}
+		size := binary.BigEndian.Uint16(otls.RecvBuffer[3:5])
+		if len(otls.RecvBuffer) < int(size)+5 {
+			break
+		}
+		binary.Write(ret, binary.BigEndian, otls.RecvBuffer[5:size+5])
+		otls.RecvBuffer = otls.RecvBuffer[size+5:]
+	}
+	return ret.Bytes(), nil
 }

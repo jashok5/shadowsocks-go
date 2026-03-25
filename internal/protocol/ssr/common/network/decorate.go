@@ -8,14 +8,16 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
+	"time"
 
 	"github.com/jashok5/shadowsocks-go/internal/protocol/ssr/common"
 	"github.com/jashok5/shadowsocks-go/internal/protocol/ssr/common/ciphers"
+	"github.com/jashok5/shadowsocks-go/internal/protocol/ssr/common/log"
 	"github.com/jashok5/shadowsocks-go/internal/protocol/ssr/common/obfs"
+	"github.com/jashok5/shadowsocks-go/internal/protocol/ssr/core"
 	"github.com/jashok5/shadowsocks-go/internal/protocol/ssr/utils/addrx"
 	"github.com/jashok5/shadowsocks-go/internal/protocol/ssr/utils/binaryx"
 	"github.com/pkg/errors"
-	"github.com/sirupsen/logrus"
 )
 
 type ILimiter interface {
@@ -24,8 +26,10 @@ type ILimiter interface {
 	UpLimit(int, int) error
 }
 
-func NewShadowsocksRDecorate(request *Request, obfsMethod, cryptMethod, key, protocolMethod, obfsParam, protocolParam, host string, port int, isLocal bool, single int, users map[string]string) (ssrd *ShadowsocksRDecorate, err error) {
-	// init essential parameters
+func NewShadowsocksRDecorate(request *Request, obfsMethod, cryptMethod, key, protocolMethod, obfsParam, protocolParam, host string, port int, isLocal bool, single int, users map[string]string, obfsService core.ObfsProtocolService) (ssrd *ShadowsocksRDecorate, err error) {
+	if obfsService == nil {
+		return nil, fmt.Errorf("obfs protocol service is nil")
+	}
 	ssrd = &ShadowsocksRDecorate{
 		Request:       request,
 		ObfsParam:     obfsParam,
@@ -38,7 +42,6 @@ func NewShadowsocksRDecorate(request *Request, obfsMethod, cryptMethod, key, pro
 		recvBuf:       new(bytes.Buffer),
 	}
 
-	// init obfs protocol encrypto component
 	ssrd.obfs, err = obfs.GetObfs(obfsMethod)
 	if err != nil {
 		return nil, err
@@ -56,9 +59,8 @@ func NewShadowsocksRDecorate(request *Request, obfsMethod, cryptMethod, key, pro
 
 	ssrd.Overhead = ssrd.obfs.GetOverhead(isLocal) + ssrd.protocol.GetOverhead(isLocal)
 
-	// set serverinfo
-	ssrd.obfs.SetServerInfo(ssrd.getServerInfo(true))
-	ssrd.protocol.SetServerInfo(ssrd.getServerInfo(false))
+	ssrd.obfs.SetServerInfo(ssrd.getServerInfo(true, obfsService))
+	ssrd.protocol.SetServerInfo(ssrd.getServerInfo(false, obfsService))
 
 	if single != 1 {
 		ssrd.UID = port
@@ -80,6 +82,8 @@ type ShadowsocksRDecorate struct {
 	Overhead      int
 	ISLocal       bool
 	recvBuf       *bytes.Buffer
+	readBuf       []byte
+	udpReadBuf    []byte
 	upload        int64
 	download      int64
 	single        int
@@ -87,6 +91,11 @@ type ShadowsocksRDecorate struct {
 	ILimiter
 	*sync.Mutex
 }
+
+const (
+	defaultTCPReadBufSize = 4 * 1024
+	defaultUDPReadBufSize = 2048
+)
 
 func (ssrd *ShadowsocksRDecorate) SetLimter(limiter ILimiter) {
 	ssrd.ILimiter = limiter
@@ -96,17 +105,19 @@ func (ssrd *ShadowsocksRDecorate) Read(buf []byte) (n int, err error) {
 	defer func() {
 		if ssrd.ILimiter != nil {
 			if err := ssrd.ILimiter.UpLimit(ssrd.UID, n); err != nil {
-				logrus.Error(err)
+				log.Errorw("up limiter failed", log.FieldUID, ssrd.UID, log.FieldError, err)
 			}
 		}
 	}()
 
-	// ServerDecode return buffer_to_recv, is_need_decrypt, is_need_to_encode_and_send_back
 	if ssrd.recvBuf.Len() > 0 {
 		return ssrd.recvBuf.Read(buf)
 	}
 
-	bufTmp := make([]byte, 4*1024)
+	if cap(ssrd.readBuf) < defaultTCPReadBufSize {
+		ssrd.readBuf = make([]byte, defaultTCPReadBufSize)
+	}
+	bufTmp := ssrd.readBuf[:defaultTCPReadBufSize]
 	n, err = ssrd.Conn.Read(bufTmp)
 	if err != nil {
 		return 0, err
@@ -115,23 +126,21 @@ func (ssrd *ShadowsocksRDecorate) Read(buf []byte) (n int, err error) {
 
 	data := bufTmp[:n]
 	unobfsData, needDecrypt, needSendBack, err := ssrd.obfs.ServerDecode(data)
-	if logrus.GetLevel() == logrus.DebugLevel {
-		logrus.WithFields(logrus.Fields{
-			"requestId":    ssrd.RequestID,
-			"data":         hex.EncodeToString(data),
-			"unobfsData":   hex.EncodeToString(unobfsData),
-			"needDecrypt":  needDecrypt,
-			"needSendBack": needSendBack,
-		}).Debug("shadowsocksr obfs ServerDecode")
+	if log.DebugEnabled() {
+		log.Debugw("shadowsocksr obfs ServerDecode",
+			log.FieldRequestID, ssrd.RequestID,
+			log.FieldData, hex.EncodeToString(data),
+			"unobfs_data", hex.EncodeToString(unobfsData),
+			"need_decrypt", needDecrypt,
+			"need_send_back", needSendBack,
+		)
 	}
 
 	if err != nil {
-		if logrus.GetLevel() == logrus.DebugLevel {
-			logrus.WithFields(logrus.Fields{
-				"err": err,
-			}).Debugf("ShadowsocksRDecorate obfs decrypt error.")
+		if log.DebugEnabled() {
+			log.Debugw("ShadowsocksRDecorate obfs decrypt error", log.FieldError, err)
 		}
-		return 0, errors.New(fmt.Sprintf("[%s] shadowsocksr obfs decrypt error.", ssrd.RequestID))
+		return 0, fmt.Errorf("[%s] shadowsocksr obfs decrypt error", ssrd.RequestID)
 	}
 
 	if needSendBack {
@@ -152,11 +161,11 @@ func (ssrd *ShadowsocksRDecorate) Read(buf []byte) (n int, err error) {
 		if ssrd.protocol.GetServerInfo().GetRecvIv() == nil || len(ssrd.protocol.GetServerInfo().GetRecvIv()) == 0 {
 			ssrd.protocol.GetServerInfo().SetRecvIv(ssrd.encryptor.IVIn)
 		}
-		if logrus.GetLevel() == logrus.DebugLevel {
-			logrus.WithFields(logrus.Fields{
-				"cleartextHexEncode": hex.EncodeToString(cleartext),
-				"requestId":          ssrd.RequestID,
-			}).Debug("ShadowsocksRDecorate encryptor Decrypt")
+		if log.DebugEnabled() {
+			log.Debugw("ShadowsocksRDecorate encryptor decrypt",
+				log.FieldRequestID, ssrd.RequestID,
+				"cleartext_hex", hex.EncodeToString(cleartext),
+			)
 		}
 
 		if err != nil && strings.Contains(err.Error(), "buf is too short") {
@@ -172,24 +181,23 @@ func (ssrd *ShadowsocksRDecorate) Read(buf []byte) (n int, err error) {
 	}
 
 	data, sendback, err := ssrd.protocol.ServerPostDecrypt(data)
-	if logrus.GetLevel() == logrus.DebugLevel {
-		logrus.WithFields(logrus.Fields{
-			"serverPostDecryptHex": hex.EncodeToString(data),
-			"sendback":             sendback,
-			"requestId":            ssrd.RequestID,
-		}).Debug("ShadowsocksRDecorate protocol ServerPostDecrypt")
+	if log.DebugEnabled() {
+		log.Debugw("ShadowsocksRDecorate protocol server post decrypt",
+			log.FieldRequestID, ssrd.RequestID,
+			"server_post_decrypt_hex", hex.EncodeToString(data),
+			"send_back", sendback,
+		)
 	}
 	if err != nil {
 		return 0, errors.Wrap(err, fmt.Sprintf("[%s] ShadowsocksRDecorate protocol post decrypt error.", ssrd.RequestID))
 	}
 	if sendback {
 		backdata, err := ssrd.protocol.ServerPreEncrypt([]byte{})
-		if logrus.GetLevel() == logrus.DebugLevel {
-			logrus.WithFields(logrus.Fields{
-				"backdata":  hex.EncodeToString(backdata),
-				"requestId": ssrd.RequestID,
-				//"LastServerHash":hex.EncodeToString(ssrd.protocol.(*obfs.AuthChainA).LastServerHash),
-			}).Debug("shadowoscksr Read ServerPreEncrypt")
+		if log.DebugEnabled() {
+			log.Debugw("shadowoscksr read server pre encrypt",
+				log.FieldRequestID, ssrd.RequestID,
+				"back_data", hex.EncodeToString(backdata),
+			)
 		}
 		if err != nil {
 			return 0, errors.Wrap(err, fmt.Sprintf("[%s] ShadowsocksRDecorate protocol pre encode error.", ssrd.RequestID))
@@ -198,21 +206,21 @@ func (ssrd *ShadowsocksRDecorate) Read(buf []byte) (n int, err error) {
 		if err != nil {
 			return 0, errors.Wrap(err, fmt.Sprintf("[%s] ShadowsocksRDecorate encrypter encrypt error.", ssrd.RequestID))
 		}
-		if logrus.GetLevel() == logrus.DebugLevel {
-			logrus.WithFields(logrus.Fields{
-				"ReadEncryptData": hex.EncodeToString(backdata),
-				"requestId":       ssrd.RequestID,
-			}).Debug("shadowoscksr Read Encrypt")
+		if log.DebugEnabled() {
+			log.Debugw("shadowoscksr read encrypt",
+				log.FieldRequestID, ssrd.RequestID,
+				"read_encrypt_data", hex.EncodeToString(backdata),
+			)
 		}
 		backdata, err = ssrd.obfs.ServerEncode(backdata)
 		if err != nil {
 			return 0, errors.Wrap(err, fmt.Sprintf("[%s] ShadowsocksRDecorate obfs service encode error.", ssrd.RequestID))
 		}
-		if logrus.GetLevel() == logrus.DebugLevel {
-			logrus.WithFields(logrus.Fields{
-				"ReadServerEncodeData": hex.EncodeToString(backdata),
-				"requestId":            ssrd.RequestID,
-			}).Debug("shadowoscksr Read ServerEncode")
+		if log.DebugEnabled() {
+			log.Debugw("shadowoscksr read server encode",
+				log.FieldRequestID, ssrd.RequestID,
+				"read_server_encode_data", hex.EncodeToString(backdata),
+			)
 		}
 		n, err = ssrd.Conn.Write(backdata)
 		if err != nil {
@@ -221,16 +229,17 @@ func (ssrd *ShadowsocksRDecorate) Read(buf []byte) (n int, err error) {
 		atomic.AddInt64(&ssrd.download, int64(n))
 	}
 	if ssrd.TrafficReport != nil && ssrd.UID != 0 && ssrd.upload != 0 {
-		//TODO add lock
-		ssrd.TrafficReport.Upload(ssrd.UID, ssrd.upload)
-		ssrd.upload = 0
+		upload := atomic.SwapInt64(&ssrd.upload, 0)
+		if upload != 0 {
+			ssrd.TrafficReport.Upload(ssrd.UID, upload)
+		}
 	}
 	if ssrd.recvBuf.Len() == 0 && len(data) == 0 {
 		return 0, nil
 	}
 	ssrd.recvBuf.Write(data)
 	n, err = ssrd.recvBuf.Read(buf)
-	//log.Debug("n:%d,err:%v",n,err)
+
 	return n, err
 }
 
@@ -238,7 +247,7 @@ func (ssrd *ShadowsocksRDecorate) Write(buf []byte) (n int, err error) {
 	defer func() {
 		if ssrd.ILimiter != nil {
 			if err := ssrd.ILimiter.DownLimit(ssrd.UID, n); err != nil {
-				logrus.Error(err)
+				log.Errorw("down limiter failed", log.FieldUID, ssrd.UID, log.FieldError, err)
 			}
 		}
 	}()
@@ -247,40 +256,37 @@ func (ssrd *ShadowsocksRDecorate) Write(buf []byte) (n int, err error) {
 	if err != nil {
 		return 0, errors.Wrap(err, fmt.Sprintf("[%s] ShadowsocksRDecorate protocol service encode error.", ssrd.RequestID))
 	}
-	//logrus.WithFields(logrus.Fields{
-	//	"ServerPreEncryptWriteData": hex.EncodeToString(data),
-	//	//"LastServerHash":hex.EncodeToString(ssrd.protocol.(*obfs.AuthChainA).LastServerHash),
-	//}).Debug("shadowoscksr Write ServerPreEncrypt")
+
 	data, err = ssrd.encryptor.Encrypt(data)
 	if err != nil {
 		return 0, errors.Wrap(err, fmt.Sprintf("[%s] ShadowsocksRDecorate encryptor encrypt error.", ssrd.RequestID))
 	}
-	//logrus.WithFields(logrus.Fields{
-	//	"EncryptWriteData": hex.EncodeToString(data),
-	//}).Debug("shadowoscksr Write Encrypt")
+
 	data, err = ssrd.obfs.ServerEncode(data)
 	if err != nil {
 		return 0, errors.Wrap(err, fmt.Sprintf("[%s] ShadowsocksRDecorate obfs service encode error.", ssrd.RequestID))
 	}
-	//logrus.WithFields(logrus.Fields{
-	//	"ServerEncodeWriteData": hex.EncodeToString(data),
-	//}).Debug("shadowoscksr Write ServerEncode")
+
 	n, err = ssrd.Conn.Write(data)
 	if err != nil {
 		return 0, err
 	}
 	atomic.AddInt64(&ssrd.download, int64(n))
 	if ssrd.TrafficReport != nil && ssrd.download != 0 && ssrd.UID != 0 {
-		//TODO add lock
-		ssrd.TrafficReport.Download(ssrd.UID, ssrd.download)
-		ssrd.download = 0
+		download := atomic.SwapInt64(&ssrd.download, 0)
+		if download != 0 {
+			ssrd.TrafficReport.Download(ssrd.UID, download)
+		}
 	}
 
 	return len(buf), nil
 }
 
 func (ssrd *ShadowsocksRDecorate) ReadFrom() (data, uid []byte, addr net.Addr, err error) {
-	p := make([]byte, 2048)
+	if cap(ssrd.udpReadBuf) < defaultUDPReadBufSize {
+		ssrd.udpReadBuf = make([]byte, defaultUDPReadBufSize)
+	}
+	p := ssrd.udpReadBuf[:defaultUDPReadBufSize]
 	n, addr, err := ssrd.PacketConn.ReadFrom(p)
 	if err != nil {
 		return nil, nil, nil, err
@@ -294,7 +300,7 @@ func (ssrd *ShadowsocksRDecorate) ReadFrom() (data, uid []byte, addr net.Addr, e
 	if err != nil {
 		return nil, nil, nil, err
 	}
-	// update upload traffic
+
 	if ssrd.single == 1 && ssrd.TrafficReport != nil {
 		ssrd.TrafficReport.Upload(int(binaryx.LEBytesToUInt32([]byte(uidPack))), int64(n))
 	}
@@ -322,7 +328,7 @@ func (ssrd *ShadowsocksRDecorate) WriteTo(p, uid []byte, addr net.Addr) error {
 	return err
 }
 
-func (ssrd *ShadowsocksRDecorate) getServerInfo(isObfs bool) obfs.ServerInfo {
+func (ssrd *ShadowsocksRDecorate) getServerInfo(isObfs bool, obfsService core.ObfsProtocolService) obfs.ServerInfo {
 	serverInfo := obfs.NewServerInfo()
 	serverInfo.SetHost(ssrd.Host)
 	serverInfo.SetPort(ssrd.Port)
@@ -342,19 +348,111 @@ func (ssrd *ShadowsocksRDecorate) getServerInfo(isObfs bool) obfs.ServerInfo {
 	serverInfo.SetKeyStr(ssrd.encryptor.KeyStr)
 	serverInfo.SetKey(ssrd.encryptor.Key)
 	serverInfo.SetHeadLen(obfs.DefaultHeadLen)
-	// TODO: need calculate,for now, I don't know how to implement it on windows
-	serverInfo.SetTCPMss(obfs.TcpMss)
+	serverInfo.SetTCPMss(detectTCPMSS(ssrd.Conn))
 	serverInfo.SetBufferSize(obfs.BufSize - ssrd.Overhead)
 	serverInfo.SetOverhead(ssrd.Overhead)
 	serverInfo.SetUpdateUserFunc(ssrd.UpdateUser)
 	serverInfo.SetUsers(ssrd.Users)
+	serverInfo.SetObfsProtocolService(obfsService)
 	return serverInfo
+}
+
+func detectTCPMSS(conn net.Conn) int {
+	if conn == nil {
+		return obfs.TcpMss
+	}
+
+	tcpAddr, ok := conn.LocalAddr().(*net.TCPAddr)
+	if !ok || tcpAddr == nil || tcpAddr.IP == nil {
+		return obfs.TcpMss
+	}
+
+	mtu := detectInterfaceMTUByIP(tcpAddr.IP)
+	if mtu <= 0 {
+		return obfs.TcpMss
+	}
+
+	ipTCPOverhead := 40
+	if tcpAddr.IP.To4() == nil {
+		ipTCPOverhead = 60
+	}
+
+	mss := mtu - ipTCPOverhead
+	if mss <= 0 {
+		return obfs.TcpMss
+	}
+
+	if mss < 536 {
+		return 536
+	}
+	if mss > obfs.TcpMss {
+		return obfs.TcpMss
+	}
+	return mss
+}
+
+func detectInterfaceMTUByIP(ip net.IP) int {
+	if ip == nil {
+		return 0
+	}
+	now := time.Now()
+	key := ip.String()
+	if cached, ok := mtuByIPCache.Load(key); ok {
+		switch v := cached.(type) {
+		case mtuCacheEntry:
+			if now.UnixNano() < v.expiresAt {
+				return v.mtu
+			}
+		case int:
+			return v
+		}
+	}
+	mtu := detectInterfaceMTUByIPSlowFunc(ip)
+	mtuByIPCache.Store(key, mtuCacheEntry{mtu: mtu, expiresAt: now.Add(mtuCacheTTL).UnixNano()})
+	return mtu
+}
+
+var mtuByIPCache sync.Map
+var mtuCacheTTL = 5 * time.Minute
+var detectInterfaceMTUByIPSlowFunc = detectInterfaceMTUByIPSlow
+
+type mtuCacheEntry struct {
+	mtu       int
+	expiresAt int64
+}
+
+func detectInterfaceMTUByIPSlow(ip net.IP) int {
+	interfaces, err := net.Interfaces()
+	if err != nil {
+		return 0
+	}
+
+	for _, iface := range interfaces {
+		if iface.MTU <= 0 {
+			continue
+		}
+		addrs, err := iface.Addrs()
+		if err != nil {
+			continue
+		}
+		for _, addr := range addrs {
+			ipNet, ok := addr.(*net.IPNet)
+			if !ok || ipNet == nil {
+				continue
+			}
+			if ipNet.Contains(ip) {
+				return iface.MTU
+			}
+		}
+	}
+
+	return 0
 }
 
 func (ssrd *ShadowsocksRDecorate) UpdateUser(uid []byte) {
 	if ssrd.single == 1 {
 		uidInt := binaryx.LEBytesToUInt32(uid)
 		ssrd.UID = int(uidInt)
-		logrus.Infof("ShadowsocksRDecorate update uid: %v", uidInt)
+		log.Infow("ShadowsocksRDecorate update uid", log.FieldUID, uidInt)
 	}
 }

@@ -11,11 +11,7 @@ import (
 	"math"
 	"math/rand"
 	"reflect"
-	"strconv"
-	"strings"
 	"time"
-
-	"github.com/jashok5/shadowsocks-go/internal/protocol/ssr/core"
 
 	"github.com/jashok5/shadowsocks-go/internal/protocol/ssr/common/ciphers"
 	"github.com/jashok5/shadowsocks-go/internal/protocol/ssr/common/log"
@@ -32,16 +28,10 @@ func init() {
 }
 
 func AuthAes128Md5Factory(method string) (Plain, error) {
-	if core.GetApp().GetObfsProtocolService() == nil {
-		return nil, errors.New("obfs protocol service is nil")
-	}
 	return NewAuthAes128Sha1(method, md5.New)
 }
 
 func AuthAes128Sha1Factory(method string) (Plain, error) {
-	if core.GetApp().GetObfsProtocolService() == nil {
-		return nil, errors.New("obfs protocol service is nil")
-	}
 	return NewAuthAes128Sha1(method, sha1.New)
 }
 
@@ -180,30 +170,22 @@ func (a *AuthAes128Sha1) packAuthData(authData, buf []byte) ([]byte, error) {
 	macKey := bytesx.ContactSlice(a.GetServerInfo().GetIv(), a.GetServerInfo().GetKey())
 
 	param := a.GetServerInfo().GetProtocolParam()
-	var uidPack []byte
-	if strings.Contains(param, ":") {
-		items := strings.Split(param, ":")
-		if len(items) > 1 {
-			a.UserKey = hashSum([]byte(items[1]), a.HashFunc)
-			uidInt, err := strconv.Atoi(items[0])
-			if err != nil {
-				return nil, err
-			}
-			uidPack = binaryx.LEUint32ToBytes(uint32(uidInt))
-		} else {
-			return nil, errors.New(fmt.Sprintf("obfs param error: %s", param))
-		}
-	} else {
-		return nil, errors.New(fmt.Sprintf("obfs param error: %s", param))
+	uidPack, secret, ok, err := parseProtocolParamUIDSecretPack(param)
+	if err != nil {
+		return nil, err
 	}
+	if !ok {
+		return nil, fmt.Errorf("obfs param error: %s", param)
+	}
+	a.UserKey = hashSum([]byte(secret), a.HashFunc)
 
 	if a.UserKey == nil {
-		return nil, errors.New(fmt.Sprintf("obfs param error: %s", param))
+		return nil, fmt.Errorf("obfs param error: %s", param)
 	}
 	encryptor, err := ciphers.NewEncryptorWithIv("aes-128-cbc",
 		string(bytesx.ContactSlice([]byte(base64.StdEncoding.EncodeToString(a.UserKey)), a.Salt)),
 		bytes.Repeat([]byte{0x00}, 16))
-	//log.Debug("packAuthData use encryptor key: %s",hex.EncodeToString(encryptor.Key))
+
 	if err != nil {
 		return nil, err
 	}
@@ -211,7 +193,7 @@ func (a *AuthAes128Sha1) packAuthData(authData, buf []byte) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
-	//log.Debug("packAuthData pack after encrypt head: %s", hex.EncodeToString(dataEncrypt[16:]))
+
 	data = bytesx.ContactSlice(uidPack, dataEncrypt[16:])
 	data = bytesx.ContactSlice(data, hmacSum(macKey, data, a.HashFunc)[:4])
 	checkHead := randomx.RandomBytes(1)
@@ -222,26 +204,21 @@ func (a *AuthAes128Sha1) packAuthData(authData, buf []byte) ([]byte, error) {
 }
 
 func (a *AuthAes128Sha1) ClientPreEncrypt(buf []byte) (result []byte, err error) {
-	result = []byte{}
 	originDataLen := len(buf)
-	// seem not be used. copy from shadowsocksr python version
-	//ognDataLen := len(buf)
-	if !a.HasSentHeader {
-		headSize := a.GetHeadSize(buf, 30)
-		dataLen := int(math.Min(float64(len(buf)), float64(randomx.RandIntRange(0, 31)+headSize)))
-		packAuthData, err := a.packAuthData(core.GetApp().GetObfsProtocolService().AuthData(), buf[:dataLen])
-		if err != nil {
-			return nil, err
-		}
-		result = bytesx.ContactSlice(result, packAuthData)
-		buf = buf[dataLen:]
-		a.HasSentHeader = true
+	result, err = buildClientPreEncrypt(
+		buf,
+		&a.HasSentHeader,
+		a.GetHeadSize,
+		a.GetServerInfo().GetObfsProtocolService().AuthData(),
+		a.packAuthData,
+		a.UnitLen,
+		func(chunk []byte) ([]byte, error) {
+			return a.packData(chunk, originDataLen), nil
+		},
+	)
+	if err != nil {
+		return nil, err
 	}
-	for len(buf) > a.UnitLen {
-		result = bytesx.ContactSlice(result, a.packData(buf[:a.UnitLen], originDataLen))
-		buf = buf[a.UnitLen:]
-	}
-	result = bytesx.ContactSlice(result, a.packData(buf, originDataLen))
 	a.LastRndLen = originDataLen
 	return result, nil
 }
@@ -260,16 +237,14 @@ func (a *AuthAes128Sha1) ClientPostDecrypt(buf []byte) (result []byte, err error
 		}
 		length := binaryx.LEBytesToUint16(a.RecvBuf[:2])
 		if length >= 8129 || length < 7 {
-			a.RawTrans = true
-			a.RecvBuf = []byte{}
+			setRawTransAndClearRecv(&a.RawTrans, &a.RecvBuf)
 			return nil, errors.New("client_post_decrypt data error")
 		}
 		if int(length) > len(a.RecvBuf) {
 			break
 		}
 		if !bytes.Equal(hmacSum(macKey, a.RecvBuf[:length-4], a.HashFunc)[:4], a.RecvBuf[length-4:length]) {
-			a.RawTrans = true
-			a.RecvBuf = []byte{}
+			setRawTransAndClearRecv(&a.RawTrans, &a.RecvBuf)
 			return nil, errors.New("client_post_decrypt data uncorrect checksum")
 		}
 
@@ -329,9 +304,12 @@ func (a *AuthAes128Sha1) ServerPostDecrypt(buf []byte) (result []byte, sendback 
 
 		sha1Data = hmacSum(macKey, a.RecvBuf[7:27], a.HashFunc)[:4]
 		if !bytes.Equal(sha1Data, a.RecvBuf[27:31]) {
-			log.Error("%s data uncorrect auth HMAC-SHA1 from %s:%d ,data %s",
-				a.NoCompatibleMethod, a.GetServerInfo().GetClient(), a.GetServerInfo().GetClientPort(),
-				hex.EncodeToString(a.RecvBuf))
+			log.Errorw("auth hmac-sha1 verify failed",
+				log.FieldMethod, a.NoCompatibleMethod,
+				log.FieldClient, a.GetServerInfo().GetClient(),
+				log.FieldClientPort, a.GetServerInfo().GetClientPort(),
+				log.FieldData, hex.EncodeToString(a.RecvBuf),
+			)
 			if len(a.RecvBuf) < 31+a.ExtraWaitSize {
 				return []byte{}, false, nil
 			}
@@ -341,13 +319,15 @@ func (a *AuthAes128Sha1) ServerPostDecrypt(buf []byte) (result []byte, sendback 
 
 		uidPack := a.RecvBuf[7:11]
 		uid := binaryx.LEBytesToUInt32(uidPack)
-		if a.GetServerInfo().GetUsers()[string(uidPack)] != "" {
-			a.UserID = uidPack
-			a.UserKey = hashSum([]byte(a.GetServerInfo().GetUsers()[string(uidPack)]), a.HashFunc)
-			a.GetServerInfo().UpdateUser(uidPack)
-		} else {
-			return []byte{}, false, errors.New(fmt.Sprintf("user %v not exist", uid))
+		userKey, ok := findRequiredUserKey(a.GetServerInfo().GetUsers(), uidPack, func(secret string) []byte {
+			return hashSum([]byte(secret), a.HashFunc)
+		})
+		if !ok {
+			return []byte{}, false, fmt.Errorf("user %v not exist", uid)
 		}
+		a.UserID = uidPack
+		a.UserKey = userKey
+		a.GetServerInfo().UpdateUser(uidPack)
 
 		encryptor, err := ciphers.NewEncryptorWithIv("aes-128-cbc",
 			string(bytesx.ContactSlice([]byte(base64.StdEncoding.EncodeToString(a.UserKey)), a.Salt)),
@@ -356,13 +336,12 @@ func (a *AuthAes128Sha1) ServerPostDecrypt(buf []byte) (result []byte, sendback 
 		if err != nil {
 			return []byte{}, false, err
 		}
-		//log.Debug("ServerPostDecrypt use encryptor key: %s",hex.EncodeToString(encryptor.Key))
-		//log.Debug("ServerPostDecrypt head before decrypt: %s", hex.EncodeToString(a.RecvBuf[11:27]))
+
 		head, err := encryptor.Decrypt(bytesx.ContactSlice(bytes.Repeat([]byte{0x00}, 16), a.RecvBuf[11:27]))
 		if err != nil {
 			return []byte{}, false, err
 		}
-		//log.Debug("ServerPostDecrypt head  after decrypt: %s", hex.EncodeToString(head))
+
 		length := binaryx.LEBytesToUint16(head[12:14])
 		if len(a.RecvBuf) < int(length) {
 			return []byte{}, false, nil
@@ -373,25 +352,32 @@ func (a *AuthAes128Sha1) ServerPostDecrypt(buf []byte) (result []byte, sendback 
 		rndLen := binaryx.LEBytesToUint16(head[14:16])
 		macData := hmacSum(a.UserKey, a.RecvBuf[:length-4], a.HashFunc)[:4]
 		if !bytes.Equal(macData, a.RecvBuf[length-4:length]) {
-			log.Error("%s: checksum error, data %s", a.NoCompatibleMethod, hex.EncodeToString(a.RecvBuf[:length]))
+			log.Errorw("auth checksum error",
+				log.FieldMethod, a.NoCompatibleMethod,
+				log.FieldData, hex.EncodeToString(a.RecvBuf[:length]),
+			)
 			result, sendback = a.NotMatchReturn(a.RecvBuf)
 			return result, sendback, nil
 		}
 		timeDif := int(int64(utcTime) - time.Now().Unix()&0xFFFFFFFF)
 		if timeDif < -a.MaxTimeDif || timeDif > a.MaxTimeDif {
-			log.Info("%s: wrong timestamp, time_dif %v, data %s",
-				a.NoCompatibleMethod,
-				timeDif,
-				hex.EncodeToString(head))
+			log.Infow("auth wrong timestamp",
+				log.FieldMethod, a.NoCompatibleMethod,
+				log.FieldTimeDiff, timeDif,
+				log.FieldData, hex.EncodeToString(head),
+			)
 			result, sendback = a.NotMatchReturn(a.RecvBuf)
 			return result, sendback, nil
-		} else if core.GetApp().GetObfsProtocolService().Insert(a.UserID, int(clientId), int(connectionId)) {
+		} else if a.GetServerInfo().GetObfsProtocolService().Insert(a.UserID, int(clientId), int(connectionId)) {
 			a.HasRecvHeader = true
 			result = a.RecvBuf[31+rndLen : length-4]
 			a.ClientID = int(clientId)
 			a.ConnectionID = int(connectionId)
 		} else {
-			log.Info("%s: auth fail, data %s", a.NoCompatibleMethod, hex.EncodeToString(result))
+			log.Infow("auth failed",
+				log.FieldMethod, a.NoCompatibleMethod,
+				log.FieldData, hex.EncodeToString(result),
+			)
 			result, sendback = a.NotMatchReturn(a.RecvBuf)
 			return result, sendback, nil
 		}
@@ -400,26 +386,23 @@ func (a *AuthAes128Sha1) ServerPostDecrypt(buf []byte) (result []byte, sendback 
 		sendback = true
 	}
 	for len(a.RecvBuf) > 4 {
-		//log.Debug("ServerPostDecrypt data: %s",hex.EncodeToString(a.RecvBuf))
 		macKey := bytesx.ContactSlice(a.UserKey, binaryx.LEUint32ToBytes(uint32(a.RecvID)))
-		//log.Debug("ServerPostDecrypt decode packData macKey: %s",hex.EncodeToString(macKey))
 		mac := hmacSum(macKey, a.RecvBuf[:2], a.HashFunc)[:2]
 		if !bytes.Equal(mac, a.RecvBuf[2:4]) {
-			a.RawTrans = true
-			log.Info("%s %s", a.NoCompatibleMethod, ": wrong crc")
+			setRawTrans(&a.RawTrans)
+			log.Infow("auth wrong crc", log.FieldMethod, a.NoCompatibleMethod)
 			if a.RecvID == 0 {
-				return bytes.Repeat([]byte{byte('E')}, 2048), false, nil
+				return errorReply2048(), false, nil
 			}
 			return []byte{}, false, errors.New("server_post_decrype data error")
 		}
 
 		length := int(binaryx.LEBytesToUint16(a.RecvBuf[:2]))
 		if length >= 8192 || length < 7 {
-			a.RawTrans = true
-			a.RecvBuf = []byte{}
+			setRawTransAndClearRecv(&a.RawTrans, &a.RecvBuf)
 			if a.RecvID == 0 {
-				log.Error("%s %s", a.NoCompatibleMethod, "over size")
-				return bytes.Repeat([]byte{byte('E')}, 2048), false, nil
+				log.Errorw("auth over size", log.FieldMethod, a.NoCompatibleMethod, log.FieldLength, length)
+				return errorReply2048(), false, nil
 			}
 
 			return []byte{}, false, errors.New("server_post_decrype data error")
@@ -431,11 +414,13 @@ func (a *AuthAes128Sha1) ServerPostDecrypt(buf []byte) (result []byte, sendback 
 
 		macData := hmacSum(macKey, a.RecvBuf[:length-4], a.HashFunc)[:4]
 		if !bytes.Equal(macData, a.RecvBuf[length-4:length]) {
-			log.Error("%s: checksum error, data %s", a.NoCompatibleMethod, hex.EncodeToString(a.RecvBuf[:length]))
-			a.RawTrans = true
-			a.RecvBuf = []byte{}
+			log.Errorw("auth checksum error",
+				log.FieldMethod, a.NoCompatibleMethod,
+				log.FieldData, hex.EncodeToString(a.RecvBuf[:length]),
+			)
+			setRawTransAndClearRecv(&a.RawTrans, &a.RecvBuf)
 			if a.RecvID == 0 {
-				return bytes.Repeat([]byte{byte('E')}, 2048), false, nil
+				return errorReply2048(), false, nil
 			}
 			return []byte{}, false, errors.New("server_post_decrype data uncorrect checksum")
 		}
@@ -454,7 +439,7 @@ func (a *AuthAes128Sha1) ServerPostDecrypt(buf []byte) (result []byte, sendback 
 		}
 	}
 	if len(result) > 0 {
-		core.GetApp().GetObfsProtocolService().Update(a.UserID, a.ClientID, a.ConnectionID)
+		a.GetServerInfo().GetObfsProtocolService().Update(a.UserID, a.ClientID, a.ConnectionID)
 	}
 	return result, sendback, nil
 }
@@ -462,18 +447,13 @@ func (a *AuthAes128Sha1) ServerPostDecrypt(buf []byte) (result []byte, sendback 
 func (a *AuthAes128Sha1) ClientUDPPreEncrypt(buf []byte) ([]byte, error) {
 	if a.UserKey == nil {
 		param := a.GetServerInfo().GetProtocolParam()
-		if strings.Contains(param, ":") {
-			items := strings.Split(param, ":")
-			if len(items) > 1 {
-				a.UserKey = hashSum([]byte(items[1]), a.HashFunc)
-				uidInt, err := strconv.Atoi(items[0])
-				if err != nil {
-					return nil, err
-				}
-				uidPack := binaryx.LEUint32ToBytes(uint32(uidInt))
-				a.UserID = uidPack
-			}
-
+		uidPack, secret, ok, err := parseProtocolParamUIDSecretPack(param)
+		if err != nil {
+			return nil, err
+		}
+		if ok {
+			a.UserKey = hashSum([]byte(secret), a.HashFunc)
+			a.UserID = uidPack
 		}
 		if a.UserKey == nil {
 			a.UserID = randomx.RandomBytes(4)
@@ -499,18 +479,14 @@ func (a *AuthAes128Sha1) ServerUDPPreEncrypt(buf, _ []byte) ([]byte, error) {
 }
 
 func (a *AuthAes128Sha1) ServerUDPPostDecrypt(buf []byte) ([]byte, string, error) {
-	var userKey []byte
 	uidPack := buf[len(buf)-8 : len(buf)-4]
-	if a.GetServerInfo().GetUsers()[string(uidPack)] != "" {
-		userKey = hashSum([]byte(a.GetServerInfo().GetUsers()[string(uidPack)]), a.HashFunc)
-	} else {
-		userKey = nil
-		if len(a.GetServerInfo().GetUsers()) == 0 {
-			userKey = a.GetServerInfo().GetKey()
-		} else {
-			userKey = a.GetServerInfo().GetRecvIv()
-		}
-	}
+	userKey := resolveUserKey(
+		a.GetServerInfo().GetUsers(),
+		uidPack,
+		a.GetServerInfo().GetKey(),
+		a.GetServerInfo().GetRecvIv(),
+		func(secret string) []byte { return hashSum([]byte(secret), a.HashFunc) },
+	)
 	macData := hmacSum(userKey, buf[:len(buf)-4], a.HashFunc)[:4]
 	if !bytes.Equal(macData, buf[len(buf)-4:]) {
 		return []byte{}, "", nil

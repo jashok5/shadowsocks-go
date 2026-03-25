@@ -37,6 +37,7 @@ runtime:
   dns_resolver: "8.8.8.8:53"
   max_udp_session_per_port: 2048
   max_udp_resolve_cache_entries: 4096
+  udp_assoc_error_delta_warn: 3
   switchrule:
     enabled: false
     mode: none

@@ -27,7 +27,6 @@ type BloomRing struct {
 }
 
 func NewBloomRing(slot, capacity int, falsePositiveRate float64) *BloomRing {
-	// Calculate entries for each slot
 	r := &BloomRing{
 		slotCapacity: capacity / slot,
 		slotCount:    slot,
@@ -51,7 +50,6 @@ func (r *BloomRing) Add(b []byte) {
 func (r *BloomRing) add(b []byte) {
 	slot := r.slots[r.slotPosition]
 	if r.entryCounter > r.slotCapacity {
-		// Move to next slot and reset
 		r.slotPosition = (r.slotPosition + 1) % r.slotCount
 		slot = r.slots[r.slotPosition]
 		slot.Reset()

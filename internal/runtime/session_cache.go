@@ -40,10 +40,7 @@ type SessionCacheSnapshot struct {
 }
 
 func newSessionCache(maxEntries int, ttl time.Duration, onEvict func(string, any)) *sessionCache {
-	orderCap := maxEntries
-	if orderCap < 64 {
-		orderCap = 64
-	}
+	orderCap := max(maxEntries, 64)
 	return &sessionCache{
 		entries:    make(map[string]sessionCacheEntry),
 		order:      make([]string, 0, orderCap),
@@ -138,7 +135,7 @@ func (c *sessionCache) evictApproxOldest() (string, any, bool) {
 		return "", nil, false
 	}
 	steps := len(c.order)
-	for i := 0; i < steps; i++ {
+	for range steps {
 		if c.cursor >= len(c.order) {
 			c.cursor = 0
 		}

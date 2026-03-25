@@ -25,10 +25,7 @@ func (c *cfbCompat) XORKeyStream(dst, src []byte) {
 	bs := len(c.out)
 	for len(src) > 0 {
 		c.b.Encrypt(c.out, c.next)
-		n := bs
-		if n > len(src) {
-			n = len(src)
-		}
+		n := min(bs, len(src))
 		if c.decrypt {
 			cipherText := append([]byte(nil), src[:n]...)
 			for i := 0; i < n; i++ {

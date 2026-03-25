@@ -4,14 +4,6 @@ type Closeable interface {
 	Close() error
 }
 
-type Runable interface {
-	Start() error
-}
-
-type Reloadable interface {
-	Reload() error
-}
-
 type HostFirewall interface {
 	JudgeHostWithReport(ipOrDomain string, uid int) bool
 }

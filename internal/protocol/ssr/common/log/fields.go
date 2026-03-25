@@ -1,0 +1,27 @@
+package log
+
+const (
+	FieldRequestID       = "request_id"
+	FieldError           = "error"
+	FieldStack           = "stack"
+	FieldUID             = "uid"
+	FieldUserID          = "user_id"
+	FieldClientID        = "client_id"
+	FieldClient          = "client"
+	FieldClientAddr      = "client_addr"
+	FieldClientPort      = "client_port"
+	FieldServerAddr      = "server_addr"
+	FieldRemoteAddr      = "remote_addr"
+	FieldTargetAddr      = "target_addr"
+	FieldPort            = "port"
+	FieldAddr            = "addr"
+	FieldMethod          = "method"
+	FieldData            = "data"
+	FieldName            = "name"
+	FieldTimeDiff        = "time_diff"
+	FieldConnectionID    = "connection_id"
+	FieldDirection       = "direction"
+	FieldLength          = "length"
+	FieldLeftRemoteAddr  = "left_remote_addr"
+	FieldRightRemoteAddr = "right_remote_addr"
+)

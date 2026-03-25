@@ -22,7 +22,6 @@ type PacketConnCipher interface {
 	PacketConn(net.PacketConn) net.PacketConn
 }
 
-// ErrCipherNotSupported occurs when a cipher is not supported (likely because of security concerns).
 var ErrCipherNotSupported = errors.New("cipher not supported")
 
 const (
@@ -31,7 +30,6 @@ const (
 	aeadChacha20Poly1305 = "AEAD_CHACHA20_POLY1305"
 )
 
-// List of AEAD ciphers: key size in bytes and constructor
 var aeadList = map[string]struct {
 	KeySize int
 	New     func([]byte) (shadowaead.Cipher, error)
@@ -76,13 +74,11 @@ func (aead *aeadCipher) PacketConn(c net.PacketConn) net.PacketConn {
 	return shadowaead.NewPacketConn(c, aead)
 }
 
-// dummy cipher does not encrypt
 type dummy struct{}
 
 func (dummy) StreamConn(c net.Conn) net.Conn             { return c }
 func (dummy) PacketConn(c net.PacketConn) net.PacketConn { return c }
 
-// key-derivation function from original Shadowsocks
 func kdf(password string, keyLen int) []byte {
 	var b, prev []byte
 	h := md5.New()

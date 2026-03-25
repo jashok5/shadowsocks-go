@@ -5,11 +5,8 @@ go 1.26.1
 require (
 	github.com/pkg/errors v0.9.1
 	github.com/riobard/go-bloom v0.0.0-20200614022211-cdc8013cb5b3
-	github.com/robfig/cron v1.2.0
 	github.com/rs/xid v1.6.0
-	github.com/sirupsen/logrus v1.9.4
 	github.com/spf13/viper v1.21.0
-	github.com/stackimpact/stackimpact-go v2.3.10+incompatible
 	gitlab.com/yawning/chacha20.git v0.0.0-20230427033715-7877545b1b37
 	go.uber.org/zap v1.27.1
 	go.yaml.in/yaml/v3 v3.0.4
@@ -22,7 +19,7 @@ require (
 	github.com/fsnotify/fsnotify v1.9.0 // indirect
 	github.com/go-viper/mapstructure/v2 v2.5.0 // indirect
 	github.com/google/go-cmp v0.7.0 // indirect
-	github.com/pelletier/go-toml/v2 v2.2.4 // indirect
+	github.com/pelletier/go-toml/v2 v2.3.0 // indirect
 	github.com/rogpeppe/go-internal v1.14.1 // indirect
 	github.com/sagikazarmark/locafero v0.12.0 // indirect
 	github.com/spf13/afero v1.15.0 // indirect

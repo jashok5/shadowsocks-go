@@ -54,8 +54,6 @@ func (c *salsaStreamCipher) XORKeyStream(dst, src []byte) {
 	copy(subNonce[:], c.nonce[:])
 	binary.LittleEndian.PutUint64(subNonce[len(c.nonce):], uint64(c.counter/64))
 
-	// It's difficult to avoid data copy here. src or dst maybe slice from
-	// Conn.Read/Write, which can't have padding.
 	copy(buf[padLen:], src[:])
 	xsalsa20.XORKeyStream(buf, buf, subNonce[:], &c.key)
 	copy(dst, buf[padLen:])

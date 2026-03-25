@@ -10,7 +10,7 @@ import (
 	"github.com/jashok5/shadowsocks-go/internal/protocol/ss/internal"
 )
 
-const payloadSizeMask = 0x3FFF // 16*1024 - 1
+const payloadSizeMask = 0x3FFF
 
 type writer struct {
 	io.Writer

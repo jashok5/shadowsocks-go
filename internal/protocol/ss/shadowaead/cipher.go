@@ -67,7 +67,7 @@ func aesGCM(key []byte) (cipher.AEAD, error) {
 
 func AESGCM(psk []byte) (Cipher, error) {
 	switch l := len(psk); l {
-	case 16, 24, 32: // AES 128/196/256
+	case 16, 24, 32:
 	default:
 		return nil, aes.KeySizeError(l)
 	}

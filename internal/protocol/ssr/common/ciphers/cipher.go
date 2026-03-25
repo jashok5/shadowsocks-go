@@ -6,12 +6,11 @@ import (
 	"crypto/rand"
 	"io"
 
-	"github.com/jashok5/shadowsocks-go/internal/protocol/ssr/common/ciphers/block"
-	"github.com/jashok5/shadowsocks-go/internal/protocol/ssr/utils/bytesx"
-	"github.com/sirupsen/logrus"
-
 	"github.com/jashok5/shadowsocks-go/internal/protocol/ssr/common/ciphers/aead"
+	"github.com/jashok5/shadowsocks-go/internal/protocol/ssr/common/ciphers/block"
 	"github.com/jashok5/shadowsocks-go/internal/protocol/ssr/common/ciphers/stream"
+	"github.com/jashok5/shadowsocks-go/internal/protocol/ssr/common/log"
+	"github.com/jashok5/shadowsocks-go/internal/protocol/ssr/utils/bytesx"
 	"github.com/pkg/errors"
 )
 
@@ -261,7 +260,7 @@ func NewEncryptorWithIv(method, key string, iv []byte) (result *Encryptor, err e
 	result = new(Encryptor)
 	result.IVSent = false
 	result.Method = method
-	// if method is stream then
+
 	if cp := stream.GetStreamCipher(method); cp != nil {
 		result.Key = evpBytesToKey(key, cp.KeyLen())
 		result.IVLen = cp.IVLen()
@@ -355,9 +354,7 @@ func (e *Encryptor) NewIV() (iv []byte, err error) {
 func (e *Encryptor) MustNewIV() []byte {
 	iv, err := e.NewIV()
 	if err != nil {
-		logrus.WithFields(logrus.Fields{
-			"error": err,
-		}).Error("cipher Encryptor MustNewIV error")
+		log.Errorw("cipher Encryptor MustNewIV error", "error", err)
 		return nil
 	}
 	return iv

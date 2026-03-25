@@ -16,6 +16,7 @@ import (
 	"github.com/jashok5/shadowsocks-go/internal/model"
 
 	vnetCommon "github.com/jashok5/shadowsocks-go/internal/protocol/ssr/common"
+	vnetLog "github.com/jashok5/shadowsocks-go/internal/protocol/ssr/common/log"
 	vnetNetwork "github.com/jashok5/shadowsocks-go/internal/protocol/ssr/common/network"
 	vnetObfs "github.com/jashok5/shadowsocks-go/internal/protocol/ssr/common/obfs"
 	vnetCore "github.com/jashok5/shadowsocks-go/internal/protocol/ssr/core"
@@ -32,6 +33,9 @@ const (
 	ssrStopTimeout               = 15 * time.Second
 	maxSSRUDPResolveCacheEntries = 4096
 	ssrUDPResolveTTL             = 30 * time.Second
+	ssrUDPAssocTTL               = 30 * time.Second
+	ssrUDPAssocReadTimeout       = 30 * time.Second
+	ssrUDPAssocSweepEvery        = 10 * time.Second
 )
 
 type SSRDriver struct {
@@ -40,66 +44,87 @@ type SSRDriver struct {
 	mu      sync.RWMutex
 	servers map[int]*ssrInstance
 
-	trafficMu    sync.RWMutex
-	transfer     map[int]model.PortTransfer
-	userTransfer map[int]model.PortTransfer
-	onlineIP     map[int]map[string]struct{}
-	userOnlineIP map[int]map[string]struct{}
-	wrongIP      map[string]time.Time
-	userDetect   map[int]map[int]struct{}
-	authGuard    *authFailGuard
-	maxResolve   int
-	handshakeCap int
-	perIPCap     int
+	trafficMu      sync.RWMutex
+	transfer       map[int]model.PortTransfer
+	userTransfer   map[int]model.PortTransfer
+	onlineIP       map[int]map[string]struct{}
+	userOnlineIP   map[int]map[string]struct{}
+	portUserOnline map[int]map[int]map[string]struct{}
+	wrongIP        map[string]time.Time
+	userDetect     map[int]map[int]struct{}
+	authGuard      *authFailGuard
+	handshakeG     *handshakeGate
+	maxResolve     int
+	handshakeCap   int
+	perIPCap       int
+	errorDeltaWarn int
 }
 
 type ssrInstance struct {
-	port      int
-	proxy     *vnetServer.ShadowsocksRProxy
-	cfg       PortConfig
-	usersPack map[string]string
-	detect    map[int]struct{}
-	tcp       net.Listener
-	udp       net.PacketConn
-	limitUp   map[int]*rate.Limiter
-	limitDown map[int]*rate.Limiter
-	ctx       context.Context
-	cancel    context.CancelFunc
-	wg        sync.WaitGroup
-	connTrack *connTracker
-	handshake chan struct{}
+	port           int
+	proxy          *vnetServer.ShadowsocksRProxy
+	cfg            PortConfig
+	usersPack      map[string]string
+	detect         map[int]struct{}
+	tcp            net.Listener
+	udp            net.PacketConn
+	limitUp        map[int]*rate.Limiter
+	limitDown      map[int]*rate.Limiter
+	ctx            context.Context
+	cancel         context.CancelFunc
+	wg             sync.WaitGroup
+	obfsService    vnetCore.ObfsProtocolService
+	connTrack      *connTracker
+	udpAssoc       *udpAssocStore
+	udpRunnerStats *udpAssocRunnerMetrics
 
 	resolveMu       sync.Mutex
 	resolvedAddrTTL *sessionCache
 }
 
+type ssrUDPAssoc struct {
+	mu            sync.Mutex
+	conn          net.PacketConn
+	uid           []byte
+	readerRunning bool
+}
+
 type SSRPortCacheStat struct {
 	Port            int
+	UDPAssocRunner  udpAssocRunnerSnapshot
+	UDPAssocAlerts  udpAssocAlertSnapshot
+	UDPAssocCache   SessionCacheSnapshot
 	UDPResolveCache SessionCacheSnapshot
+	UserOnlineCount map[int]int
 }
 
 func NewSSRDriverWithTuning(log *zap.Logger, tuning DriverTuning) *SSRDriver {
+	vnetLog.SetLogger(log)
+
 	d := &SSRDriver{
-		log:          log,
-		servers:      make(map[int]*ssrInstance),
-		transfer:     make(map[int]model.PortTransfer),
-		userTransfer: make(map[int]model.PortTransfer),
-		onlineIP:     make(map[int]map[string]struct{}),
-		userOnlineIP: make(map[int]map[string]struct{}),
-		wrongIP:      make(map[string]time.Time),
-		userDetect:   make(map[int]map[int]struct{}),
-		authGuard:    newAuthFailGuard(log, "ssr"),
-		maxResolve:   tuning.maxUDPResolveCacheEntriesOr(maxSSRUDPResolveCacheEntries),
-		handshakeCap: resolveHandshakeLimit(tuning.HandshakeMaxConcurrent),
-		perIPCap:     resolvePerIPHandshakeLimit(tuning.PerIPHandshakeMax),
+		log:            log,
+		servers:        make(map[int]*ssrInstance),
+		transfer:       make(map[int]model.PortTransfer),
+		userTransfer:   make(map[int]model.PortTransfer),
+		onlineIP:       make(map[int]map[string]struct{}),
+		userOnlineIP:   make(map[int]map[string]struct{}),
+		portUserOnline: make(map[int]map[int]map[string]struct{}),
+		wrongIP:        make(map[string]time.Time),
+		userDetect:     make(map[int]map[int]struct{}),
+		authGuard:      newAuthFailGuard(log, "ssr"),
+		maxResolve:     tuning.maxUDPResolveCacheEntriesOr(maxSSRUDPResolveCacheEntries),
+		handshakeCap:   resolveHandshakeLimit(tuning.HandshakeMaxConcurrent),
+		perIPCap:       resolvePerIPHandshakeLimit(tuning.PerIPHandshakeMax),
+		errorDeltaWarn: tuning.udpAssocErrorDeltaWarnOr(1),
 	}
 	if d.authGuard != nil {
 		d.authGuard.inflightMax = d.perIPCap
 	}
+	d.handshakeG = newHandshakeGate(d.authGuard, d.handshakeCap)
 	return d
 }
 
-func (d *SSRDriver) Start(_ context.Context, cfg PortConfig) error {
+func (d *SSRDriver) Start(ctx context.Context, cfg PortConfig) error {
 	if strings.TrimSpace(cfg.Method) == "" {
 		cfg.Method = "chacha20-ietf"
 	}
@@ -128,10 +153,6 @@ func (d *SSRDriver) Start(_ context.Context, cfg PortConfig) error {
 		ObfsParam:     buildMultiUserObfsParam(cfg),
 		Single:        boolToSingle(cfg.IsMultiUser),
 		Users:         usersPack,
-		ShadowsocksRArgs: &vnetServer.ShadowsocksRArgs{
-			TCPSwitch: "false",
-			UDPSwitch: "false",
-		},
 		TrafficReport: trafficReporter(func(uid int, up, down int64) {
 			d.addTraffic(cfg.Port, uid, up, down)
 		}),
@@ -143,9 +164,23 @@ func (d *SSRDriver) Start(_ context.Context, cfg PortConfig) error {
 		}),
 	}
 
+	_ = ctx
 	instCtx, cancel := context.WithCancel(context.Background())
-	inst := &ssrInstance{port: cfg.Port, proxy: proxy, cfg: cfg, usersPack: usersPack, detect: make(map[int]struct{}), limitUp: make(map[int]*rate.Limiter), limitDown: make(map[int]*rate.Limiter), ctx: instCtx, cancel: cancel, connTrack: newConnTracker(), handshake: make(chan struct{}, d.handshakeCap)}
+	inst := &ssrInstance{port: cfg.Port, proxy: proxy, cfg: cfg, usersPack: usersPack, detect: make(map[int]struct{}), limitUp: make(map[int]*rate.Limiter), limitDown: make(map[int]*rate.Limiter), ctx: instCtx, cancel: cancel, obfsService: vnetObfs.NewObfsAuthChainData(cfg.Protocol), connTrack: newConnTracker(), udpRunnerStats: &udpAssocRunnerMetrics{}}
 	inst.resolvedAddrTTL = newSessionCache(d.maxResolve, ssrUDPResolveTTL, nil)
+	inst.udpAssoc = newUDPAssocStore(d.maxResolve, ssrUDPAssocTTL, func(_ string, value any) {
+		assoc, ok := value.(*ssrUDPAssoc)
+		if !ok || assoc == nil {
+			return
+		}
+		assoc.mu.Lock()
+		conn := assoc.conn
+		assoc.conn = nil
+		assoc.mu.Unlock()
+		if conn != nil {
+			_ = conn.Close()
+		}
+	})
 	for uid, speed := range cfg.UserSpeed {
 		inst.limitUp[uid] = newRateLimiter(speed)
 		inst.limitDown[uid] = newRateLimiter(speed)
@@ -155,8 +190,6 @@ func (d *SSRDriver) Start(_ context.Context, cfg PortConfig) error {
 		inst.limitDown[cfg.UserID] = newRateLimiter(cfg.NodeSpeedLimit)
 	}
 	d.servers[cfg.Port] = inst
-	vnetCore.GetApp().SetObfsProtocolService(vnetObfs.NewObfsAuthChainData(cfg.Protocol))
-	_ = vnetCore.GetApp().Init()
 	if err := d.startTCPListener(inst); err != nil {
 		delete(d.servers, cfg.Port)
 		cancel()
@@ -215,9 +248,6 @@ func (d *SSRDriver) Stop(ctx context.Context, port int) error {
 		return nil
 	}
 	inst.closeActiveTCP()
-	if inst.proxy != nil && inst.proxy.Listener != nil {
-		_ = inst.proxy.Listener.Close()
-	}
 	inst.cancel()
 	if inst.tcp != nil {
 		_ = inst.tcp.Close()
@@ -225,6 +255,7 @@ func (d *SSRDriver) Stop(ctx context.Context, port int) error {
 	if inst.udp != nil {
 		_ = inst.udp.Close()
 	}
+	inst.closeUDPAssoc()
 	if err := waitGroupWithContext(ctx, &inst.wg); err != nil {
 		d.log.Warn("ssr driver stop timeout", zap.Int("port", port), zap.Error(err))
 		return err
@@ -304,6 +335,9 @@ func (d *SSRDriver) Snapshot(_ context.Context) (DriverSnapshot, error) {
 	for k := range d.userDetect {
 		delete(d.userDetect, k)
 	}
+	for k := range d.portUserOnline {
+		delete(d.portUserOnline, k)
+	}
 
 	return DriverSnapshot{Transfer: transfer, UserTransfer: userTransfer, OnlineIP: online, UserOnlineIP: userOnline, Detect: detect, UserDetect: userDetect, WrongIP: wrongIP}, nil
 }
@@ -369,7 +403,21 @@ func (d *SSRDriver) addOnlineIP(port int, uid int, ip string) {
 			d.userOnlineIP[uid] = make(map[string]struct{})
 		}
 		d.userOnlineIP[uid][ip] = struct{}{}
+		d.markPortUserOnlineLocked(port, uid, ip)
 	}
+}
+
+func (d *SSRDriver) markPortUserOnlineLocked(port int, uid int, ip string) {
+	if uid <= 0 || strings.TrimSpace(ip) == "" {
+		return
+	}
+	if _, ok := d.portUserOnline[port]; !ok {
+		d.portUserOnline[port] = make(map[int]map[string]struct{})
+	}
+	if _, ok := d.portUserOnline[port][uid]; !ok {
+		d.portUserOnline[port][uid] = make(map[string]struct{})
+	}
+	d.portUserOnline[port][uid][ip] = struct{}{}
 }
 
 func (d *SSRDriver) markWrongIP(ip string) {
@@ -559,39 +607,38 @@ func (d *SSRDriver) serveSSRTCP(inst *ssrInstance) {
 			continue
 		}
 		ip := addrIP(conn.RemoteAddr())
-		handshakeKey := authHandshakeKey(ip, inst.port)
 		if d.isAuthBlocked(ip) {
 			d.logAuthSampled(ip, "ssr tcp blocked by auth-fail threshold", zap.Int("port", inst.port))
 			_ = conn.Close()
 			continue
 		}
-		if !authTryAcquireHandshake(d.authGuard, handshakeKey) {
+		lease, acquireRes := d.handshakeG.Acquire(inst.ctx, ip, inst.port)
+		switch acquireRes {
+		case handshakeAcquireOK:
+		case handshakeAcquirePerIPLimit:
 			d.logAuthSampled(ip, "ssr tcp drop by per-ip handshake limit", zap.Int("port", inst.port))
 			_ = conn.Close()
 			continue
-		}
-		select {
-		case <-inst.ctx.Done():
-			authReleaseHandshake(d.authGuard, handshakeKey)
+		case handshakeAcquireGlobalLimit:
+			d.logAuthSampled(ip, "ssr tcp drop by handshake concurrency limit", zap.Int("port", inst.port))
+			_ = conn.Close()
+			continue
+		case handshakeAcquireCanceled:
 			_ = conn.Close()
 			return
-		case inst.handshake <- struct{}{}:
 		default:
-			authReleaseHandshake(d.authGuard, handshakeKey)
-			d.logAuthSampled(ip, "ssr tcp drop by handshake concurrency limit", zap.Int("port", inst.port))
 			_ = conn.Close()
 			continue
 		}
 		inst.wg.Add(1)
-		go func(c net.Conn, ip string, handshakeKey string) {
+		go func(c net.Conn, ip string, lease handshakeLease) {
 			defer inst.wg.Done()
-			defer func() { <-inst.handshake }()
 			handshakeReleased := false
 			releaseHandshake := func() {
 				if handshakeReleased {
 					return
 				}
-				authReleaseHandshake(d.authGuard, handshakeKey)
+				lease.Release()
 				handshakeReleased = true
 			}
 			defer releaseHandshake()
@@ -608,6 +655,7 @@ func (d *SSRDriver) serveSSRTCP(inst *ssrInstance) {
 				false,
 				boolToSingle(inst.cfg.IsMultiUser),
 				inst.usersPack,
+				inst.obfsService,
 			)
 			if err != nil || ssrd == nil {
 				clientIP := addrIP(c.RemoteAddr())
@@ -658,7 +706,7 @@ func (d *SSRDriver) serveSSRTCP(inst *ssrInstance) {
 			}
 			defer remote.Close()
 			relayQuietLimited(inst.ctx, ssrd, remote, upLimiter, downLimiter)
-		}(conn, ip, handshakeKey)
+		}(conn, ip, lease)
 	}
 }
 
@@ -710,15 +758,15 @@ func relayOneWayLimited(ctx context.Context, src net.Conn, dst net.Conn, limiter
 }
 
 func (d *SSRDriver) startUDPListener(inst *ssrInstance) error {
-	vnetCore.GetApp().SetObfsProtocolService(vnetObfs.NewObfsAuthChainData(inst.cfg.Protocol))
-	_ = vnetCore.GetApp().Init()
-
 	udpConn, err := net.ListenPacket("udp", fmt.Sprintf("0.0.0.0:%d", inst.port))
 	if err != nil {
 		return err
 	}
 	inst.udp = udpConn
 	startBackgroundTasks(&inst.wg, func() { d.serveSSRUDP(inst) })
+	startPeriodicBackground(&inst.wg, inst.ctx, ssrUDPAssocSweepEvery, func(now time.Time) {
+		inst.sweepUDPAssoc(now)
+	}, nil)
 	return nil
 }
 
@@ -732,13 +780,13 @@ func (d *SSRDriver) serveSSRUDP(inst *ssrInstance) {
 		false,
 		boolToSingle(inst.cfg.IsMultiUser),
 		inst.usersPack,
+		inst.obfsService,
 	)
 	if err != nil || ssrd == nil {
 		d.log.Error("new ssr decorate for udp failed", zap.Int("port", inst.port), zap.Error(err))
 		return
 	}
 	ssrd.TrafficReport = inst.proxy.TrafficReport
-	udpMap := vnetServer.NewShadowsocksRUDPMap(30)
 
 	for {
 		select {
@@ -778,26 +826,110 @@ func (d *SSRDriver) serveSSRUDP(inst *ssrInstance) {
 		d.applySSRDetect(uidInt, payload, inst.cfg.Detect)
 		upLimiter := inst.limitUp[uidInt]
 
-		remotePacketConn := udpMap.Get(addr.String())
-		if remotePacketConn == nil {
-			remotePacketConn = &vnetServer.ShadowsocksRUDPMapItem{Uid: uid}
-			remotePacketConn.PacketConn, rerr = net.ListenPacket("udp", "")
-			if rerr != nil {
-				continue
-			}
-			udpMap.Add(addr, ssrd, remotePacketConn)
+		assocKey := buildUDPAssocKey(udpAssocKeyClientOnly, addr, "", uidInt)
+		assoc, rerr := inst.getOrCreateUDPAssocWithReader(assocKey, uid, func(a *ssrUDPAssoc) {
+			d.startSSRUDPAssocReader(inst, ssrd, addr, a)
+		})
+		if rerr != nil {
+			d.markWrongIP(addrIP(addr))
+			continue
 		}
 		remoteResolve, rerr := inst.resolveUDPAddrWithCache(remoteAddr.String())
 		if rerr != nil {
 			d.markWrongIP(addrIP(addr))
 			continue
 		}
-		_ = waitLimiter(inst.ctx, upLimiter, len(payload))
-		if _, err = remotePacketConn.WriteTo(payload, remoteResolve); err != nil {
+		assoc.mu.Lock()
+		pc := assoc.conn
+		assoc.mu.Unlock()
+		if pc == nil {
+			d.markWrongIP(addrIP(addr))
+			continue
+		}
+		if err = writeUDPToPacketConn(inst.ctx, upLimiter, pc, payload, remoteResolve); err != nil {
 			d.markWrongIP(addrIP(addr))
 			continue
 		}
 	}
+}
+
+func (inst *ssrInstance) getOrCreateUDPAssoc(key string, uid []byte) (*ssrUDPAssoc, error) {
+	return inst.getOrCreateUDPAssocWithReader(key, uid, nil)
+}
+
+func (inst *ssrInstance) getOrCreateUDPAssocWithReader(key string, uid []byte, ensureReader func(*ssrUDPAssoc)) (*ssrUDPAssoc, error) {
+	return getOrCreateAssocWithReader[*ssrUDPAssoc](
+		inst.udpAssoc,
+		key,
+		func() (*ssrUDPAssoc, error) {
+			pc, e := net.ListenPacket("udp", "")
+			if e != nil {
+				return nil, e
+			}
+			uidCopy := append([]byte(nil), uid...)
+			return &ssrUDPAssoc{conn: pc, uid: uidCopy}, nil
+		},
+		"invalid ssr udp assoc type",
+		ensureReader,
+	)
+}
+
+func (d *SSRDriver) startSSRUDPAssocReader(inst *ssrInstance, ssrd *vnetNetwork.ShadowsocksRDecorate, clientAddr net.Addr, assoc *ssrUDPAssoc) {
+	if assoc == nil || ssrd == nil || clientAddr == nil {
+		return
+	}
+	assoc.mu.Lock()
+	if assoc.readerRunning || assoc.conn == nil {
+		assoc.mu.Unlock()
+		return
+	}
+	assoc.readerRunning = true
+	assoc.mu.Unlock()
+
+	startUDPAssocReader(udpAssocRunnerConfig{
+		Ctx:        inst.ctx,
+		Spawn:      inst.wg.Go,
+		Timeout:    ssrUDPAssocReadTimeout,
+		BufferSize: udpBufSize,
+		Metrics:    inst.udpRunnerStats,
+		PacketConn: func() net.PacketConn {
+			assoc.mu.Lock()
+			defer assoc.mu.Unlock()
+			return assoc.conn
+		},
+		OnPacket: func(payload []byte, source net.Addr) {
+			assoc.mu.Lock()
+			uid := append([]byte(nil), assoc.uid...)
+			assoc.mu.Unlock()
+			writer := newSSRUDPResponseWriter(ssrd, clientAddr, uid)
+			_ = writer.WriteResponse(payload, source)
+		},
+		OnError: func(_ error, kind udpAssocErrorKind) {
+			if kind == udpAssocErrIO {
+				assoc.mu.Lock()
+				uidCopy := append([]byte(nil), assoc.uid...)
+				assoc.mu.Unlock()
+				uidVal := 0
+				if len(uidCopy) >= 4 {
+					uidVal = int(binaryx.LEBytesToUInt32(uidCopy))
+				}
+				d.log.Warn("ssr udp assoc reader error",
+					zap.Int("port", inst.port),
+					zap.String("client_addr", clientAddr.String()),
+					zap.Int("uid", uidVal),
+					zap.String("error_kind", kind.String()),
+				)
+			}
+			if kind == udpAssocErrTimeout || kind == udpAssocErrCanceled || kind == udpAssocErrClosed {
+				return
+			}
+		},
+		OnExit: func() {
+			assoc.mu.Lock()
+			assoc.readerRunning = false
+			assoc.mu.Unlock()
+		},
+	})
 }
 
 func addrIP(a net.Addr) string {
@@ -850,6 +982,18 @@ func (d *SSRDriver) cleanResolvedUDPAddr(inst *ssrInstance, now time.Time) {
 	sweepSessionCache(&inst.resolveMu, inst.resolvedAddrTTL, now)
 }
 
+func (inst *ssrInstance) sweepUDPAssoc(now time.Time) {
+	if inst.udpAssoc != nil {
+		inst.udpAssoc.Sweep(now)
+	}
+}
+
+func (inst *ssrInstance) closeUDPAssoc() {
+	if inst.udpAssoc != nil {
+		inst.udpAssoc.CloseAll()
+	}
+}
+
 func (inst *ssrInstance) resolveUDPAddrWithCache(target string) (*net.UDPAddr, error) {
 	return resolveUDPAddrFromCache(&inst.resolveMu, inst.resolvedAddrTTL, target, func(v string) (*net.UDPAddr, error) {
 		return resolveUDPAddrWithConfig(inst.ctx, inst.cfg, v)
@@ -861,13 +1005,29 @@ func (d *SSRDriver) CacheStats() []SSRPortCacheStat {
 	defer d.mu.RUnlock()
 	out := make([]SSRPortCacheStat, 0, len(d.servers))
 	for port, inst := range d.servers {
+		runnerSnap := udpAssocRunnerSnapshot{}
+		if inst.udpRunnerStats != nil {
+			runnerSnap = inst.udpRunnerStats.Snapshot()
+		}
+		assocSnap := SessionCacheSnapshot{}
+		if inst.udpAssoc != nil {
+			assocSnap = inst.udpAssoc.Snapshot()
+		}
+		userOnlineCount := make(map[int]int)
+		for uid, ips := range d.portUserOnline[port] {
+			userOnlineCount[uid] = len(ips)
+		}
 		inst.resolveMu.Lock()
 		snap := SessionCacheSnapshot{}
 		if inst.resolvedAddrTTL != nil {
 			snap = inst.resolvedAddrTTL.Snapshot()
 		}
 		inst.resolveMu.Unlock()
-		out = append(out, SSRPortCacheStat{Port: port, UDPResolveCache: snap})
+		runnerAlert := udpAssocAlertSnapshot{}
+		if inst.udpRunnerStats != nil {
+			runnerAlert = inst.udpRunnerStats.AlertSnapshot(int64(d.errorDeltaWarn))
+		}
+		out = append(out, SSRPortCacheStat{Port: port, UDPAssocRunner: runnerSnap, UDPAssocAlerts: runnerAlert, UDPAssocCache: assocSnap, UDPResolveCache: snap, UserOnlineCount: userOnlineCount})
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].Port < out[j].Port })
 	return out

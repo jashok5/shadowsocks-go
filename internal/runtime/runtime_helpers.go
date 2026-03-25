@@ -106,10 +106,7 @@ func resolveHandshakeLimit(configured int) int {
 	if configured > 0 {
 		return configured
 	}
-	v := 128 * stdRuntime.GOMAXPROCS(0)
-	if v < 256 {
-		v = 256
-	}
+	v := max(128*stdRuntime.GOMAXPROCS(0), 256)
 	if v > 2048 {
 		v = 2048
 	}

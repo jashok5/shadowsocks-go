@@ -1,6 +1,10 @@
 package obfs
 
-import "net"
+import (
+	"net"
+
+	"github.com/jashok5/shadowsocks-go/internal/protocol/ssr/core"
+)
 
 const (
 	TcpMss         = 1460
@@ -41,6 +45,8 @@ type ServerInfo interface {
 	SetUsers(users map[string]string)
 	UpdateUser(uid []byte)
 	SetUpdateUserFunc(func(uid []byte))
+	SetObfsProtocolService(core.ObfsProtocolService)
+	GetObfsProtocolService() core.ObfsProtocolService
 }
 
 type serverInfo struct {
@@ -60,6 +66,7 @@ type serverInfo struct {
 	Overhead      int
 	Users         map[string]string
 	updateUser    func(uid []byte)
+	obfsService   core.ObfsProtocolService
 }
 
 func NewServerInfo() ServerInfo {
@@ -198,4 +205,12 @@ func (s *serverInfo) UpdateUser(uid []byte) {
 
 func (s *serverInfo) SetUpdateUserFunc(f func([]byte)) {
 	s.updateUser = f
+}
+
+func (s *serverInfo) SetObfsProtocolService(obfsService core.ObfsProtocolService) {
+	s.obfsService = obfsService
+}
+
+func (s *serverInfo) GetObfsProtocolService() core.ObfsProtocolService {
+	return s.obfsService
 }
