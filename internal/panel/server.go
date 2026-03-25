@@ -31,12 +31,13 @@ type Server struct {
 }
 
 type UserOverview struct {
-	UserID        int   `json:"user_id"`
-	Upload        int64 `json:"upload"`
-	Download      int64 `json:"download"`
-	OnlineIPCount int   `json:"online_ip_count"`
-	DetectCount   int   `json:"detect_count"`
-	Ports         []int `json:"ports"`
+	UserID        int      `json:"user_id"`
+	Upload        int64    `json:"upload"`
+	Download      int64    `json:"download"`
+	OnlineIPCount int      `json:"online_ip_count"`
+	OnlineIPs     []string `json:"online_ips"`
+	DetectCount   int      `json:"detect_count"`
+	Ports         []int    `json:"ports"`
 }
 
 type OverviewResponse struct {
@@ -262,6 +263,11 @@ func (s *Server) handleUserDetail(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "snapshot failed"})
 		return
 	}
+	realUsers := collectRealUsers(snap)
+	if isCarrierUser(uid, snap, realUsers) {
+		writeJSON(w, http.StatusNotFound, map[string]string{"error": "user not found"})
+		return
+	}
 	detail, ok := s.buildUserDetail(snap, uid)
 	if !ok {
 		writeJSON(w, http.StatusNotFound, map[string]string{"error": "user not found"})
@@ -303,17 +309,16 @@ func (s *Server) buildOverview(snap runtime.Snapshot) OverviewResponse {
 	}
 	for uid, ips := range snap.UserOnlineIP {
 		item := ensureUser(userMap, uid)
-		item.OnlineIPCount = len(ips)
+		item.OnlineIPs = append(item.OnlineIPs, ips...)
 	}
 	for port, ips := range snap.OnlineIP {
-		uid, ok := snap.PortUser[port]
-		if !ok {
+		if uid, ok := snap.PortUser[port]; ok {
+			item := ensureUser(userMap, uid)
+			item.OnlineIPs = append(item.OnlineIPs, ips...)
 			continue
 		}
-		item := ensureUser(userMap, uid)
-		if item.OnlineIPCount == 0 {
-			item.OnlineIPCount = len(ips)
-		}
+		item := ensureUser(userMap, port)
+		item.OnlineIPs = append(item.OnlineIPs, ips...)
 	}
 	for uid, rules := range snap.UserDetect {
 		item := ensureUser(userMap, uid)
@@ -322,7 +327,7 @@ func (s *Server) buildOverview(snap runtime.Snapshot) OverviewResponse {
 	for port, rules := range snap.Detect {
 		uid, ok := snap.PortUser[port]
 		if !ok {
-			continue
+			uid = port
 		}
 		item := ensureUser(userMap, uid)
 		if item.DetectCount == 0 {
@@ -333,9 +338,31 @@ func (s *Server) buildOverview(snap runtime.Snapshot) OverviewResponse {
 		item := ensureUser(userMap, uid)
 		item.Ports = append(item.Ports, port)
 	}
+	if len(snap.PortUser) > 0 {
+		sharedPorts := make([]int, 0, len(snap.PortUser))
+		for port := range snap.PortUser {
+			sharedPorts = append(sharedPorts, port)
+		}
+		sort.Ints(sharedPorts)
+		for _, item := range userMap {
+			if len(item.Ports) > 0 {
+				continue
+			}
+			item.Ports = append(item.Ports, sharedPorts...)
+		}
+	}
+
+	realUsers := collectRealUsers(snap)
+	for uid := range userMap {
+		if isCarrierUser(uid, snap, realUsers) {
+			delete(userMap, uid)
+		}
+	}
 
 	resp.UserList = make([]UserOverview, 0, len(userMap))
 	for _, v := range userMap {
+		v.OnlineIPs = dedupeStrings(v.OnlineIPs)
+		v.OnlineIPCount = len(v.OnlineIPs)
 		sort.Ints(v.Ports)
 		resp.UserList = append(resp.UserList, *v)
 		resp.TotalUpload += v.Upload
@@ -372,6 +399,35 @@ func (s *Server) buildOverview(snap runtime.Snapshot) OverviewResponse {
 	}
 
 	return resp
+}
+
+func collectRealUsers(snap runtime.Snapshot) map[int]struct{} {
+	out := make(map[int]struct{})
+	for uid := range snap.UserTransfer {
+		out[uid] = struct{}{}
+	}
+	for uid := range snap.UserOnlineIP {
+		out[uid] = struct{}{}
+	}
+	for uid := range snap.UserDetect {
+		out[uid] = struct{}{}
+	}
+	return out
+}
+
+func isCarrierUser(uid int, snap runtime.Snapshot, realUsers map[int]struct{}) bool {
+	if len(realUsers) == 0 {
+		return false
+	}
+	if _, ok := realUsers[uid]; ok {
+		return false
+	}
+	for _, portUID := range snap.PortUser {
+		if portUID == uid {
+			return true
+		}
+	}
+	return false
 }
 
 func ensureUser(userMap map[int]*UserOverview, uid int) *UserOverview {
@@ -424,6 +480,15 @@ func (s *Server) buildUserDetail(snap runtime.Snapshot, uid int) (UserDetailResp
 		detail.OnlineIPCount = len(detail.OnlineIPs)
 		detail.Active = detail.OnlineIPCount > 0
 	}
+	if detail.OnlineIPCount == 0 {
+		if ips, ok := snap.OnlineIP[uid]; ok {
+			detail.OnlineIPs = append(detail.OnlineIPs, ips...)
+			detail.OnlineIPs = dedupeStrings(detail.OnlineIPs)
+			detail.OnlineIPCount = len(detail.OnlineIPs)
+			detail.Active = detail.OnlineIPCount > 0
+			found = true
+		}
+	}
 	if rules, ok := snap.UserDetect[uid]; ok {
 		detail.DetectRules = append(detail.DetectRules, rules...)
 		sort.Ints(detail.DetectRules)
@@ -446,6 +511,11 @@ func (s *Server) buildUserDetail(snap runtime.Snapshot, uid int) (UserDetailResp
 		if userID == uid {
 			detail.Ports = append(detail.Ports, port)
 			found = true
+		}
+	}
+	if len(detail.Ports) == 0 {
+		for port := range snap.PortUser {
+			detail.Ports = append(detail.Ports, port)
 		}
 	}
 	sort.Ints(detail.Ports)

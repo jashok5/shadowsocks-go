@@ -37,7 +37,7 @@
 
       <n-grid :cols="24" :x-gap="12" :y-gap="12" responsive="screen">
         <n-grid-item :span="24">
-          <n-card title="用户在线连接 TOP10" size="small">
+          <n-card title="用户实时流量 TOP10（上传+下载）" size="small">
             <component :is="OnlineTopBarChart" :rows="userRows" />
           </n-card>
         </n-grid-item>
@@ -75,8 +75,8 @@
         </n-grid-item>
       </n-grid>
 
-      <n-grid :cols="24" :x-gap="12" :y-gap="12" responsive="screen">
-        <n-grid-item :span="24" :l-span="12">
+      <n-grid v-if="showSSCard || showSSRCard" :cols="24" :x-gap="12" :y-gap="12" responsive="screen">
+        <n-grid-item v-if="showSSCard" :span="24">
           <n-card title="SS 端口缓存/连接状态" size="small">
             <n-data-table
               :columns="ssColumns"
@@ -88,7 +88,7 @@
             />
           </n-card>
         </n-grid-item>
-        <n-grid-item :span="24" :l-span="12">
+        <n-grid-item v-if="showSSRCard" :span="24">
           <n-card title="SSR 端口缓存/连接状态" size="small">
             <n-data-table
               :columns="ssrColumns"
@@ -203,10 +203,24 @@ const kpiCards = computed(() => [
 const userRows = computed<UserOverview[]>(() => data.value?.user_list || [])
 const ssRows = computed<SSStat[]>(() => data.value?.ss_stats || [])
 const ssrRows = computed<SSRStat[]>(() => data.value?.ssr_stats || [])
+const showSSCard = computed(() => (data.value?.driver || '').toLowerCase() === 'ss')
+const showSSRCard = computed(() => (data.value?.driver || '').toLowerCase() === 'ssr')
 
 const userColumns: DataTableColumns<UserOverview> = [
   { title: '用户ID', key: 'user_id', sorter: 'default' },
-  { title: '在线IP', key: 'online_ip_count', sorter: 'default' },
+  {
+    title: '在线IP',
+    key: 'online_ips',
+    sorter: (a, b) => (a.online_ips?.length || 0) - (b.online_ips?.length || 0),
+    ellipsis: {
+      tooltip: true,
+    },
+    render: (row) => {
+      const ips = row.online_ips || []
+      if (ips.length === 0) return '-'
+      return ips.join(', ')
+    },
+  },
   { title: '上行', key: 'upload', render: (row) => formatBytes(row.upload) },
   { title: '下行', key: 'download', render: (row) => formatBytes(row.download) },
   { title: '规则触发', key: 'detect_count' },
@@ -251,7 +265,17 @@ const ssColumns: DataTableColumns<SSStat> = [
 
 const ssrColumns: DataTableColumns<SSRStat> = [
   { title: '端口', key: 'Port' },
-  { title: '在线用户数', key: 'UserOnlineCount', render: (row) => Object.keys(row.UserOnlineCount || {}).length },
+  {
+    title: '在线用户数',
+    key: 'UserOnlineCount',
+    render: (row) => {
+      const values = Object.values(row.UserOnlineCount || {})
+      return values.reduce((sum, n) => sum + Number(n || 0), 0)
+    },
+  },
+  { title: 'Active TCP', key: 'ActiveTCP', render: () => '-' },
+  { title: 'TCP Drop', key: 'TCPDrop', render: () => '-' },
+  { title: 'UDP Drop', key: 'UDPDrop', render: () => '-' },
   { title: 'Assoc Cache', key: 'UDPAssocCache', render: (row) => row.UDPAssocCache.Size },
   { title: 'Resolve Cache', key: 'UDPResolveCache', render: (row) => row.UDPResolveCache.Size },
   {

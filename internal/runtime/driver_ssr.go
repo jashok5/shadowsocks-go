@@ -326,17 +326,8 @@ func (d *SSRDriver) Snapshot(_ context.Context) (DriverSnapshot, error) {
 	}
 	sort.Strings(wrongIP)
 
-	for k := range d.onlineIP {
-		delete(d.onlineIP, k)
-	}
-	for k := range d.userOnlineIP {
-		delete(d.userOnlineIP, k)
-	}
 	for k := range d.userDetect {
 		delete(d.userDetect, k)
-	}
-	for k := range d.portUserOnline {
-		delete(d.portUserOnline, k)
 	}
 
 	return DriverSnapshot{Transfer: transfer, UserTransfer: userTransfer, OnlineIP: online, UserOnlineIP: userOnline, Detect: detect, UserDetect: userDetect, WrongIP: wrongIP}, nil
@@ -1003,6 +994,19 @@ func (inst *ssrInstance) resolveUDPAddrWithCache(target string) (*net.UDPAddr, e
 func (d *SSRDriver) CacheStats() []SSRPortCacheStat {
 	d.mu.RLock()
 	defer d.mu.RUnlock()
+
+	d.trafficMu.Lock()
+	portUserOnline := make(map[int]map[int]int, len(d.portUserOnline))
+	for port, users := range d.portUserOnline {
+		if _, ok := portUserOnline[port]; !ok {
+			portUserOnline[port] = make(map[int]int)
+		}
+		for uid, ips := range users {
+			portUserOnline[port][uid] = len(ips)
+		}
+	}
+	d.trafficMu.Unlock()
+
 	out := make([]SSRPortCacheStat, 0, len(d.servers))
 	for port, inst := range d.servers {
 		runnerSnap := udpAssocRunnerSnapshot{}
@@ -1014,8 +1018,8 @@ func (d *SSRDriver) CacheStats() []SSRPortCacheStat {
 			assocSnap = inst.udpAssoc.Snapshot()
 		}
 		userOnlineCount := make(map[int]int)
-		for uid, ips := range d.portUserOnline[port] {
-			userOnlineCount[uid] = len(ips)
+		for uid, cnt := range portUserOnline[port] {
+			userOnlineCount[uid] = cnt
 		}
 		inst.resolveMu.Lock()
 		snap := SessionCacheSnapshot{}

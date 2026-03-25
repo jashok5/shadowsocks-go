@@ -19,7 +19,6 @@ const props = defineProps<{
 }>()
 
 const option = computed(() => ({
-  tooltip: { trigger: 'axis' },
   legend: { top: 8, data: ['上行', '下行'] },
   grid: { left: 48, right: 24, top: 48, bottom: 34 },
   xAxis: {
@@ -59,5 +58,16 @@ const option = computed(() => ({
       data: props.points.map((p) => p.downloadRate),
     },
   ],
+  tooltip: {
+    trigger: 'axis',
+    valueFormatter: (value: number) => formatRate(Number(value)),
+  },
 }))
+
+function formatRate(v: number): string {
+  if (!Number.isFinite(v) || v < 0) return '0 B/s'
+  if (v >= 1024 * 1024) return `${(v / (1024 * 1024)).toFixed(2)} MiB/s`
+  if (v >= 1024) return `${(v / 1024).toFixed(2)} KiB/s`
+  return `${v.toFixed(0)} B/s`
+}
 </script>
