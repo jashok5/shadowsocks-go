@@ -3,43 +3,37 @@ package main
 import (
 	"context"
 	"errors"
-	"flag"
 	"fmt"
-	"net"
-	"net/http"
 	_ "net/http/pprof"
 	"os"
 	"os/signal"
-	goRuntime "runtime"
 	"strings"
 	"syscall"
 	"time"
 
-	"github.com/jashok5/shadowsocks-go/internal/api"
+	"github.com/jashok5/shadowsocks-go/internal/bootstrap"
 	"github.com/jashok5/shadowsocks-go/internal/config"
 	"github.com/jashok5/shadowsocks-go/internal/logger"
-	"github.com/jashok5/shadowsocks-go/internal/runtime"
 	"github.com/jashok5/shadowsocks-go/internal/transfer"
-	"github.com/jashok5/shadowsocks-go/internal/updater"
-	"go.uber.org/zap"
 )
 
 func main() {
-	configPath, logLevelOverride, logFormatOverride, showVersion := parseFlags()
-	if showVersion {
+	startedAt := time.Now()
+	flags := bootstrap.ParseFlags()
+	if flags.ShowVersionOnly {
 		fmt.Println(versionString())
 		return
 	}
 
-	cfg, err := config.Load(configPath)
+	cfg, err := config.Load(flags.ConfigPath)
 	if err != nil {
 		panic(err)
 	}
-	if strings.TrimSpace(logLevelOverride) != "" {
-		cfg.Log.Level = strings.TrimSpace(logLevelOverride)
+	if strings.TrimSpace(flags.LogLevel) != "" {
+		cfg.Log.Level = strings.TrimSpace(flags.LogLevel)
 	}
-	if strings.TrimSpace(logFormatOverride) != "" {
-		cfg.Log.Format = strings.TrimSpace(logFormatOverride)
+	if strings.TrimSpace(flags.LogFormat) != "" {
+		cfg.Log.Format = strings.TrimSpace(flags.LogFormat)
 	}
 
 	log, err := logger.New(cfg.Log)
@@ -48,32 +42,28 @@ func main() {
 	}
 	defer func() { _ = log.Sync() }()
 
-	startDebugServer(cfg, log)
-
-	httpClient := buildHTTPClient(cfg.API)
-	apiClient := api.NewClient(httpClient, cfg.API)
-	apiClient.SetLogger(log)
-
-	var up *updater.Updater
-	if cfg.Update.Enabled {
-		up, err = updater.New(cfg.Update, log, configPath)
-		if err != nil {
-			log.Fatal("init updater failed", logger.Err(err))
-		}
+	bootstrap.StartDebugServer(cfg, log)
+	apiClient := bootstrap.BuildAPIClient(cfg, log)
+	up, err := bootstrap.BuildUpdater(cfg, log, flags.ConfigPath)
+	if err != nil {
+		log.Fatal("init updater failed", logger.Err(err))
 	}
-
-	drv, err := runtime.NewDriver(cfg.RT.Driver, log, runtime.DriverTuning{
-		MaxUDPSessionPerPort:      cfg.RT.MaxUDPSessionPerPort,
-		MaxUDPResolveCacheEntries: cfg.RT.MaxUDPResolveCacheEntries,
-		HandshakeMaxConcurrent:    cfg.RT.HandshakeMaxConcurrent,
-		PerIPHandshakeMax:         cfg.RT.PerIPHandshakeMax,
-		UDPAssocErrorDeltaWarn:    cfg.RT.UDPAssocErrorDeltaWarn,
-	})
+	rt, err := bootstrap.BuildRuntime(cfg, log)
 	if err != nil {
 		log.Fatal("init runtime driver failed", logger.Err(err))
 	}
-	rt := runtime.NewMemoryManagerWithDriver(log, drv, resolveReconcileWorkers(cfg.RT.ReconcileWorkers))
-	svc := transfer.NewService(cfg, configPath, log, apiClient, rt, up, version)
+	svc := bootstrap.BuildService(cfg, flags.ConfigPath, log, apiClient, rt, up, version)
+	panelServer := bootstrap.StartPanelServer(cfg, log, rt, resolvePanelAssets(cfg.Panel.Mode), cfg.RT.Driver, version, startedAt)
+	defer func() {
+		if panelServer == nil {
+			return
+		}
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+		defer cancel()
+		if err := panelServer.Shutdown(shutdownCtx); err != nil {
+			log.Warn("panel server shutdown failed", logger.Err(err))
+		}
+	}()
 
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
@@ -94,55 +84,4 @@ func main() {
 		os.Exit(1)
 	}
 	log.Info("node service stopped")
-}
-
-func startDebugServer(cfg config.Config, log *zap.Logger) {
-	if !cfg.Debug.PPROFEnabled {
-		return
-	}
-	addr := strings.TrimSpace(cfg.Debug.PPROFListen)
-	if addr == "" {
-		addr = "127.0.0.1:6060"
-	}
-	go func() {
-		srv := &http.Server{Addr: addr}
-		if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
-			log.Warn("pprof server stopped", logger.Err(err), zap.String("listen", addr))
-		}
-	}()
-	log.Info("pprof server started", zap.String("listen", addr))
-}
-
-func buildHTTPClient(cfg config.APIConfig) *http.Client {
-	transport := &http.Transport{
-		Proxy:                 http.ProxyFromEnvironment,
-		DialContext:           (&net.Dialer{Timeout: cfg.TransportDialTimeout, KeepAlive: cfg.TransportKeepAlive}).DialContext,
-		ForceAttemptHTTP2:     true,
-		MaxIdleConns:          cfg.TransportMaxIdleConns,
-		MaxIdleConnsPerHost:   cfg.TransportMaxIdlePerHost,
-		IdleConnTimeout:       cfg.TransportIdleConnTimeout,
-		TLSHandshakeTimeout:   cfg.TransportTLSHandshake,
-		ExpectContinueTimeout: cfg.TransportExpectContinue,
-	}
-	return &http.Client{Timeout: cfg.Timeout, Transport: transport}
-}
-
-func resolveReconcileWorkers(configured int) int {
-	if configured > 0 {
-		return configured
-	}
-	v := max(goRuntime.GOMAXPROCS(0)*2, 4)
-	if v > 64 {
-		v = 64
-	}
-	return v
-}
-
-func parseFlags() (configPath string, logLevel string, logFormat string, showVersion bool) {
-	configPathFlag := flag.String("config", "configs/config.example.yaml", "配置文件路径")
-	logLevelFlag := flag.String("log-level", "", "覆盖日志级别: debug/info/warn/error")
-	logFormatFlag := flag.String("log-format", "", "覆盖日志格式: console/json")
-	versionFlag := flag.Bool("version", false, "输出版本信息并退出")
-	flag.Parse()
-	return *configPathFlag, *logLevelFlag, *logFormatFlag, *versionFlag
 }

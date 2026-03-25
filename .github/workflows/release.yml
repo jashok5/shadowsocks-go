@@ -37,6 +37,14 @@ jobs:
           go-version-file: go.mod
           cache: true
 
+      - name: Set up Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - name: Install panel dependencies
+        run: bun install --cwd panel --frozen-lockfile
+
       - name: Install system dependencies
         run: |
           sudo apt-get update

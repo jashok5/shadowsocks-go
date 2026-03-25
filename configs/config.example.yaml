@@ -21,6 +21,15 @@ api:
   transport_tls_handshake_timeout: 5s
   transport_expect_continue_timeout: 1s
 
+panel:
+  enabled: true
+  mode: prod
+  listen: 0.0.0.0:18080
+  token: REPLACE_WITH_PANEL_TOKEN
+  stream_interval: 2s
+  allow_origins:
+    - "*"
+
 sync:
   update_interval: 60s
   failure_base_wait: 3s
@@ -63,3 +72,7 @@ update:
 log:
   level: info
   format: console
+
+debug:
+  pprof_enabled: false
+  pprof_listen: 127.0.0.1:6060

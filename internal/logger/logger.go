@@ -2,6 +2,7 @@ package logger
 
 import (
 	"fmt"
+	"io"
 	"os"
 	"strings"
 
@@ -29,6 +30,9 @@ func New(cfg config.LogConfig) (*zap.Logger, error) {
 	}
 
 	core := zapcore.NewCore(enc, zapcore.AddSync(os.Stdout), level)
+	globalBuffer = newRingBuffer(4000)
+	tee := zapcore.NewCore(enc, zapcore.NewMultiWriteSyncer(zapcore.AddSync(os.Stdout), zapcore.AddSync(io.Writer(globalBuffer))), level)
+	core = tee
 	return zap.New(core, zap.AddCaller()), nil
 }
 

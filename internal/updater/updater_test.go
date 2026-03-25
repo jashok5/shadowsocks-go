@@ -33,6 +33,9 @@ func TestMergeYAML_PreservesDefaultsAndOverridesOldValues(t *testing.T) {
 api:
   url: https://new.example
   token: new-token
+panel:
+  enabled: true
+  token: panel-new
 update:
   enabled: false
   check_interval: 1h
@@ -41,6 +44,8 @@ update:
   id: 999
 api:
   token: old-token
+panel:
+  token: panel-old
 `)
 
 	out, err := mergeYAML(base, override)
@@ -53,6 +58,9 @@ api:
 	}
 	if !strings.Contains(s, "token: old-token") {
 		t.Fatalf("expected merged api.token from old config, got: %s", s)
+	}
+	if !strings.Contains(s, "token: panel-old") {
+		t.Fatalf("expected merged panel.token from old config, got: %s", s)
 	}
 	if !strings.Contains(s, "url: https://new.example") {
 		t.Fatalf("expected new default api.url preserved, got: %s", s)

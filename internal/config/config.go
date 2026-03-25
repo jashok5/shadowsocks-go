@@ -12,12 +12,22 @@ import (
 type Config struct {
 	Node     NodeConfig     `mapstructure:"node"`
 	API      APIConfig      `mapstructure:"api"`
+	Panel    PanelConfig    `mapstructure:"panel"`
 	Sync     SyncConfig     `mapstructure:"sync"`
 	RT       RuntimeConfig  `mapstructure:"runtime"`
 	Debug    DebugConfig    `mapstructure:"debug"`
 	Security SecurityConfig `mapstructure:"security"`
 	Update   UpdateConfig   `mapstructure:"update"`
 	Log      LogConfig      `mapstructure:"log"`
+}
+
+type PanelConfig struct {
+	Enabled        bool          `mapstructure:"enabled"`
+	Mode           string        `mapstructure:"mode"`
+	Listen         string        `mapstructure:"listen"`
+	Token          string        `mapstructure:"token"`
+	AllowOrigins   []string      `mapstructure:"allow_origins"`
+	StreamInterval time.Duration `mapstructure:"stream_interval"`
 }
 
 type DebugConfig struct {
@@ -134,6 +144,22 @@ func (c Config) Validate() error {
 	}
 	if c.Sync.UpdateInterval <= 0 {
 		return fmt.Errorf("sync.update_interval must be > 0")
+	}
+	if c.Panel.Enabled {
+		switch strings.ToLower(strings.TrimSpace(c.Panel.Mode)) {
+		case "", "dev", "prod":
+		default:
+			return fmt.Errorf("panel.mode must be dev or prod")
+		}
+		if strings.TrimSpace(c.Panel.Listen) == "" {
+			return fmt.Errorf("panel.listen is required when panel.enabled=true")
+		}
+		if strings.TrimSpace(c.Panel.Token) == "" {
+			return fmt.Errorf("panel.token is required when panel.enabled=true")
+		}
+		if c.Panel.StreamInterval <= 0 {
+			return fmt.Errorf("panel.stream_interval must be > 0")
+		}
 	}
 	if c.API.Timeout <= 0 {
 		return fmt.Errorf("api.timeout must be > 0")
@@ -263,6 +289,13 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("api.transport_idle_conn_timeout", "90s")
 	v.SetDefault("api.transport_tls_handshake_timeout", "5s")
 	v.SetDefault("api.transport_expect_continue_timeout", "1s")
+
+	v.SetDefault("panel.enabled", false)
+	v.SetDefault("panel.mode", "dev")
+	v.SetDefault("panel.listen", "0.0.0.0:18080")
+	v.SetDefault("panel.token", "")
+	v.SetDefault("panel.allow_origins", []string{"*"})
+	v.SetDefault("panel.stream_interval", "2s")
 
 	v.SetDefault("sync.update_interval", "60s")
 	v.SetDefault("sync.failure_base_wait", "3s")

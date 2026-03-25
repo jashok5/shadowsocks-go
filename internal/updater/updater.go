@@ -445,6 +445,7 @@ func mergeYAML(baseContent []byte, overrideContent []byte) ([]byte, error) {
 		{"node", "id"},
 		{"api", "url"},
 		{"api", "token"},
+		{"panel", "token"},
 	}
 	for _, p := range preservePaths {
 		if v, ok := getMapPath(override, p); ok {

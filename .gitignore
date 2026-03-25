@@ -9,6 +9,13 @@
 /.phase5/
 /*.log
 /*.pid
+/tmp/
+
+# Local configs / secrets
+/configs/config.yaml
+/.env
+/.env.*
+/.air.toml
 
 # Coverage
 /coverage.out

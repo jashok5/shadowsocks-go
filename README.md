@@ -43,7 +43,7 @@ task build
 cp configs/config.example.yaml configs/config.yaml
 ```
 
-然后在私有配置中填写真实 `node.id`、`api.url`、`api.token`。
+然后在私有配置中填写真实 `node.id`、`api.url`、`api.token`（启用面板时还需填写 `panel.token`）。
 
 示例：
 
@@ -63,6 +63,15 @@ api:
   retry_max: 2
   retry_backoff: 500ms
   retry_max_backoff: 5s
+
+panel:
+  enabled: true
+  mode: dev
+  listen: 0.0.0.0:18080
+  token: REPLACE_WITH_PANEL_TOKEN
+  allow_origins:
+    - "*"
+  stream_interval: 2s
 
 sync:
   update_interval: 60s
@@ -130,6 +139,14 @@ log:
 - `api.transport_idle_conn_timeout`：空闲连接超时时间
 - `api.transport_tls_handshake_timeout`：TLS 握手超时时间
 - `api.transport_expect_continue_timeout`：`Expect: 100-continue` 等待超时时间
+- `panel.enabled`：是否启用内置面板服务
+- `panel.mode`：面板运行模式，`dev`（仅 API，前端走 Vite）或 `prod`（配合 embed 提供静态页面）
+- `panel.listen`：面板监听地址
+- `panel.token`：面板鉴权 token（必须保密，建议每节点独立）
+- `panel.allow_origins`：CORS 允许来源列表（生产建议精确域名，不建议 `*`）
+- `panel.stream_interval`：SSE 推送间隔
+- `debug.pprof_enabled`：是否启用 pprof 调试服务（默认关闭）
+- `debug.pprof_listen`：pprof 监听地址（默认 `127.0.0.1:6060`）
 - `sync.update_interval`：同步周期
 - `sync.failure_base_wait`：同步失败后的基础退避
 - `sync.failure_max_wait`：同步失败退避上限

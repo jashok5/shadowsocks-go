@@ -45,8 +45,9 @@ tasks:
     desc: 本机构建（目标为 darwin 时跳过 upx 压缩）
     deps: [check:upx]
     cmds:
+      - bun run --cwd panel build
       - mkdir -p {{.OUT_DIR}}
-      - CGO_ENABLED=0 go build -trimpath -ldflags "{{.LDFLAGS}}" -o {{.OUT}} .
+      - CGO_ENABLED=0 go build -tags panel_embed -trimpath -ldflags "{{.LDFLAGS}}" -o {{.OUT}} .
       - |
         TARGET_GOOS="${GOOS:-$(go env GOOS)}"
         if [ "$TARGET_GOOS" = "darwin" ]; then
@@ -59,16 +60,18 @@ tasks:
     desc: 构建 Linux amd64 二进制
     deps: [check:upx]
     cmds:
+      - bun run --cwd panel build
       - mkdir -p {{.OUT_DIR}}
-      - CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -ldflags "{{.LDFLAGS}}" -o {{.OUT}} .
+      - CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -tags panel_embed -trimpath -ldflags "{{.LDFLAGS}}" -o {{.OUT}} .
       - upx {{.OUT}}
 
   build:gox:
     desc: 使用 gox 多平台构建并压缩
     deps: [check:gox, check:upx]
     cmds:
+      - bun run --cwd panel build
       - mkdir -p {{.OUT_DIR}}
-      - CGO_ENABLED=0 gox -os="{{.GOX_OSES}}" -arch="{{.GOX_ARCHES}}" -ldflags "{{.LDFLAGS}}" -output "{{.GOX_OUT}}" .
+      - CGO_ENABLED=0 gox -os="{{.GOX_OSES}}" -arch="{{.GOX_ARCHES}}" -tags panel_embed -ldflags "{{.LDFLAGS}}" -output "{{.GOX_OUT}}" .
       - |
         for file in {{.OUT_DIR}}/{{.APP_NAME}}_*; do
           if [ ! -f "$file" ]; then
