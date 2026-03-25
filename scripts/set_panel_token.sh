@@ -83,7 +83,7 @@ if ! systemctl status "$SERVICE_NAME" >/dev/null 2>&1; then
   exit 1
 fi
 
-backup_path="${CFG_PATH}.bak.$(date +%Y%m%d%H%M%S)"
+backup_path="${CFG_PATH}.bak"
 cp -f "$CFG_PATH" "$backup_path"
 
 export PANEL_TOKEN="$TOKEN"
