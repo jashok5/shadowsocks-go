@@ -329,6 +329,15 @@ func (d *SSRDriver) Snapshot(_ context.Context) (DriverSnapshot, error) {
 	for k := range d.userDetect {
 		delete(d.userDetect, k)
 	}
+	for k := range d.onlineIP {
+		delete(d.onlineIP, k)
+	}
+	for k := range d.userOnlineIP {
+		delete(d.userOnlineIP, k)
+	}
+	for k := range d.portUserOnline {
+		delete(d.portUserOnline, k)
+	}
 
 	return DriverSnapshot{Transfer: transfer, UserTransfer: userTransfer, OnlineIP: online, UserOnlineIP: userOnline, Detect: detect, UserDetect: userDetect, WrongIP: wrongIP}, nil
 }

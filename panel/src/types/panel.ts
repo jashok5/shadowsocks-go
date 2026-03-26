@@ -4,6 +4,7 @@ export interface UserOverview {
   download: number
   online_ip_count: number
   online_ips: string[]
+  last_seen_unix: number
   detect_count: number
   ports: number[]
 }

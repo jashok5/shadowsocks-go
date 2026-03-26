@@ -44,7 +44,7 @@ func StartPanelServer(cfg config.Config, log *zap.Logger, rt runtime.Manager, as
 	if addr == "" {
 		addr = "0.0.0.0:18080"
 	}
-	h := panel.NewServer(cfg.Panel, log, rt, assets, driver, appVersion, startedAt).Handler()
+	h := panel.NewServer(cfg.Panel, log, rt, assets, driver, appVersion, startedAt, cfg.Sync.UpdateInterval).Handler()
 	srv := &http.Server{Addr: addr, Handler: h}
 	go func() {
 		if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {

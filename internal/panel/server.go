@@ -11,6 +11,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/jashok5/shadowsocks-go/internal/config"
@@ -23,6 +24,9 @@ type Server struct {
 	cfg       config.PanelConfig
 	log       *zap.Logger
 	rt        runtime.Manager
+	onlineMu  sync.Mutex
+	online    map[int]map[string]time.Time
+	onlineTTL time.Duration
 	mode      string
 	assets    fs.FS
 	driver    string
@@ -36,6 +40,7 @@ type UserOverview struct {
 	Download      int64    `json:"download"`
 	OnlineIPCount int      `json:"online_ip_count"`
 	OnlineIPs     []string `json:"online_ips"`
+	LastSeenUnix  int64    `json:"last_seen_unix"`
 	DetectCount   int      `json:"detect_count"`
 	Ports         []int    `json:"ports"`
 }
@@ -83,12 +88,20 @@ type LogsSnapshotResponse struct {
 	Items    []logger.LogEntry `json:"items"`
 }
 
-func NewServer(cfg config.PanelConfig, log *zap.Logger, rt runtime.Manager, assets fs.FS, driver string, version string, startedAt time.Time) *Server {
+type onlineWindowEntry struct {
+	IPs          []string
+	LastSeenUnix int64
+}
+
+func NewServer(cfg config.PanelConfig, log *zap.Logger, rt runtime.Manager, assets fs.FS, driver string, version string, startedAt time.Time, onlineTTL time.Duration) *Server {
 	mode := strings.ToLower(strings.TrimSpace(cfg.Mode))
 	if mode == "" {
 		mode = "dev"
 	}
-	return &Server{cfg: cfg, log: log, rt: rt, mode: mode, assets: assets, driver: strings.TrimSpace(driver), version: strings.TrimSpace(version), startedAt: startedAt}
+	if onlineTTL <= 0 {
+		onlineTTL = 60 * time.Second
+	}
+	return &Server{cfg: cfg, log: log, rt: rt, online: make(map[int]map[string]time.Time), onlineTTL: onlineTTL, mode: mode, assets: assets, driver: strings.TrimSpace(driver), version: strings.TrimSpace(version), startedAt: startedAt}
 }
 
 func (s *Server) Handler() http.Handler {
@@ -138,27 +151,15 @@ func (s *Server) handleLogsSnapshot(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleLogsStream(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodGet {
-		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
-		return
-	}
-	flusher, ok := w.(http.Flusher)
+	flusher, ok := initSSE(w, r)
 	if !ok {
-		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "stream unsupported"})
 		return
 	}
-	w.Header().Set("Content-Type", "text/event-stream")
-	w.Header().Set("Cache-Control", "no-cache")
-	w.Header().Set("Connection", "keep-alive")
 
 	b := logger.Buffer()
 	if b == nil {
-		writeSSE(w, "ready", map[string]bool{"ok": true})
-		flusher.Flush()
 		return
 	}
-	writeSSE(w, "ready", map[string]bool{"ok": true})
-	flusher.Flush()
 
 	afterID := parseInt64(r.URL.Query().Get("after_id"), 0)
 	limit := parsePositiveInt(r.URL.Query().Get("limit"), 200)
@@ -208,20 +209,10 @@ func (s *Server) handleOverview(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleStream(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodGet {
-		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
-		return
-	}
-	flusher, ok := w.(http.Flusher)
+	flusher, ok := initSSE(w, r)
 	if !ok {
-		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "stream unsupported"})
 		return
 	}
-	w.Header().Set("Content-Type", "text/event-stream")
-	w.Header().Set("Cache-Control", "no-cache")
-	w.Header().Set("Connection", "keep-alive")
-	writeSSE(w, "ready", map[string]bool{"ok": true})
-	flusher.Flush()
 
 	interval := s.cfg.StreamInterval
 	if interval <= 0 {
@@ -248,6 +239,24 @@ func (s *Server) handleStream(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+func initSSE(w http.ResponseWriter, r *http.Request) (http.Flusher, bool) {
+	if r.Method != http.MethodGet {
+		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
+		return nil, false
+	}
+	flusher, ok := w.(http.Flusher)
+	if !ok {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "stream unsupported"})
+		return nil, false
+	}
+	w.Header().Set("Content-Type", "text/event-stream")
+	w.Header().Set("Cache-Control", "no-cache")
+	w.Header().Set("Connection", "keep-alive")
+	writeSSE(w, "ready", map[string]bool{"ok": true})
+	flusher.Flush()
+	return flusher, true
+}
+
 func (s *Server) handleUserDetail(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
@@ -268,10 +277,17 @@ func (s *Server) handleUserDetail(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusNotFound, map[string]string{"error": "user not found"})
 		return
 	}
+	now := time.Now()
+	onlineMap := s.onlineSnapshotFromSnap(now, snap)
 	detail, ok := s.buildUserDetail(snap, uid)
 	if !ok {
 		writeJSON(w, http.StatusNotFound, map[string]string{"error": "user not found"})
 		return
+	}
+	if online, ok := onlineMap[uid]; ok {
+		detail.OnlineIPs = append([]string{}, online.IPs...)
+		detail.OnlineIPCount = len(online.IPs)
+		detail.Active = detail.OnlineIPCount > 0
 	}
 	writeJSON(w, http.StatusOK, detail)
 }
@@ -320,6 +336,15 @@ func (s *Server) buildOverview(snap runtime.Snapshot) OverviewResponse {
 		item := ensureUser(userMap, port)
 		item.OnlineIPs = append(item.OnlineIPs, ips...)
 	}
+
+	cachedOnline := s.onlineSnapshotFromSnap(now, snap)
+	for uid, online := range cachedOnline {
+		item := ensureUser(userMap, uid)
+		item.OnlineIPs = append(item.OnlineIPs, online.IPs...)
+		if online.LastSeenUnix > item.LastSeenUnix {
+			item.LastSeenUnix = online.LastSeenUnix
+		}
+	}
 	for uid, rules := range snap.UserDetect {
 		item := ensureUser(userMap, uid)
 		item.DetectCount = len(rules)
@@ -358,6 +383,13 @@ func (s *Server) buildOverview(snap runtime.Snapshot) OverviewResponse {
 			delete(userMap, uid)
 		}
 	}
+	for uid, v := range userMap {
+		if len(v.OnlineIPs) == 0 {
+			delete(userMap, uid)
+		}
+	}
+
+	resp.TotalUpload, resp.TotalDownload = aggregateTotals(snap)
 
 	resp.UserList = make([]UserOverview, 0, len(userMap))
 	for _, v := range userMap {
@@ -365,8 +397,6 @@ func (s *Server) buildOverview(snap runtime.Snapshot) OverviewResponse {
 		v.OnlineIPCount = len(v.OnlineIPs)
 		sort.Ints(v.Ports)
 		resp.UserList = append(resp.UserList, *v)
-		resp.TotalUpload += v.Upload
-		resp.TotalDownload += v.Download
 		resp.OnlineIPs += v.OnlineIPCount
 		if v.OnlineIPCount > 0 {
 			resp.OnlineUsers++
@@ -395,10 +425,131 @@ func (s *Server) buildOverview(snap runtime.Snapshot) OverviewResponse {
 			resp.SSStats = d.Stats()
 		case *runtime.SSRDriver:
 			resp.SSRStats = d.CacheStats()
+			s.alignSSROnline(resp.SSRStats, resp.UserList)
 		}
 	}
 
 	return resp
+}
+
+func (s *Server) updateOnlineWindow(now time.Time, incoming map[int][]string) {
+	s.onlineMu.Lock()
+	defer s.onlineMu.Unlock()
+	for uid, ips := range incoming {
+		if _, ok := s.online[uid]; !ok {
+			s.online[uid] = make(map[string]time.Time)
+		}
+		for _, ip := range ips {
+			ip = strings.TrimSpace(ip)
+			if ip == "" {
+				continue
+			}
+			s.online[uid][ip] = now
+		}
+	}
+	cutoff := now.Add(-s.onlineTTL)
+	for uid, ips := range s.online {
+		for ip, ts := range ips {
+			if ts.Before(cutoff) {
+				delete(ips, ip)
+			}
+		}
+		if len(ips) == 0 {
+			delete(s.online, uid)
+		}
+	}
+}
+
+func (s *Server) onlineWindowSnapshot(now time.Time) map[int]onlineWindowEntry {
+	s.onlineMu.Lock()
+	defer s.onlineMu.Unlock()
+	cutoff := now.Add(-s.onlineTTL)
+	out := make(map[int]onlineWindowEntry, len(s.online))
+	for uid, ips := range s.online {
+		arr := make([]string, 0, len(ips))
+		lastSeen := int64(0)
+		for ip, ts := range ips {
+			if ts.Before(cutoff) {
+				delete(ips, ip)
+				continue
+			}
+			arr = append(arr, ip)
+			unix := ts.Unix()
+			if unix > lastSeen {
+				lastSeen = unix
+			}
+		}
+		if len(arr) == 0 {
+			delete(s.online, uid)
+			continue
+		}
+		sort.Strings(arr)
+		out[uid] = onlineWindowEntry{IPs: arr, LastSeenUnix: lastSeen}
+	}
+	return out
+}
+
+func (s *Server) onlineSnapshotFromSnap(now time.Time, snap runtime.Snapshot) map[int]onlineWindowEntry {
+	s.updateOnlineWindow(now, collectIncomingOnline(snap))
+	return s.onlineWindowSnapshot(now)
+}
+
+func aggregateTotals(snap runtime.Snapshot) (int64, int64) {
+	var up int64
+	var down int64
+	if len(snap.UserTransfer) > 0 {
+		for _, t := range snap.UserTransfer {
+			up += t.Upload
+			down += t.Download
+		}
+		return up, down
+	}
+	for _, t := range snap.Transfer {
+		up += t.Upload
+		down += t.Download
+	}
+	return up, down
+}
+
+func (s *Server) alignSSROnline(stats []runtime.SSRPortCacheStat, users []UserOverview) {
+	if len(stats) == 0 {
+		return
+	}
+	byPort := make(map[int]map[int]int)
+	for _, u := range users {
+		if u.OnlineIPCount <= 0 {
+			continue
+		}
+		for _, port := range u.Ports {
+			if _, ok := byPort[port]; !ok {
+				byPort[port] = make(map[int]int)
+			}
+			byPort[port][u.UserID] = u.OnlineIPCount
+		}
+	}
+	for i := range stats {
+		if m, ok := byPort[stats[i].Port]; ok {
+			stats[i].UserOnlineCount = m
+		}
+	}
+}
+
+func collectIncomingOnline(snap runtime.Snapshot) map[int][]string {
+	out := make(map[int][]string)
+	for uid, ips := range snap.UserOnlineIP {
+		out[uid] = append(out[uid], ips...)
+	}
+	for port, ips := range snap.OnlineIP {
+		uid, ok := snap.PortUser[port]
+		if !ok {
+			uid = port
+		}
+		out[uid] = append(out[uid], ips...)
+	}
+	for uid, ips := range out {
+		out[uid] = dedupeStrings(ips)
+	}
+	return out
 }
 
 func collectRealUsers(snap runtime.Snapshot) map[int]struct{} {

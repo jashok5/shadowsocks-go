@@ -223,6 +223,12 @@ const userColumns: DataTableColumns<UserOverview> = [
   },
   { title: '上行', key: 'upload', render: (row) => formatBytes(row.upload) },
   { title: '下行', key: 'download', render: (row) => formatBytes(row.download) },
+  {
+    title: '最近连接',
+    key: 'last_seen_unix',
+    sorter: 'default',
+    render: (row) => (row.last_seen_unix ? formatDateTime(row.last_seen_unix) : '-'),
+  },
   { title: '规则触发', key: 'detect_count' },
   { title: '端口', key: 'ports', render: (row) => row.ports.join(', ') },
   {
