@@ -13,17 +13,18 @@ SERVICE_FILE="/etc/systemd/system/${SERVICE_NAME}.service"
 usage() {
   cat <<EOF
 用法:
-  sudo ./deploy_linux.sh [--node-id <id>] [--api-url <url>] [--api-token <token>] [--version <tag>]
+  sudo ./deploy_linux.sh [--node-id <id>] [--api-url <url>] [--api-token <token>] [--panel-token <token>] [--version <tag>]
 
 参数:
   --node-id   节点 ID（数字）
   --api-url   API 地址（例如 https://example.com）
   --api-token API Token
+  --panel-token Panel Token
   --version   指定发布版本标签（例如 v1.2.3，默认 latest）
   -h, --help  显示帮助
 
 说明:
-  - 如果未传 --node-id、--api-url 或 --api-token，会进入交互输入模式
+  - 如果未传 --node-id、--api-url、--api-token 或 --panel-token，会进入交互输入模式
   - 传参和交互可混用，缺哪个补哪个
 EOF
 }
@@ -80,6 +81,7 @@ fi
 NODE_ID="${NODE_ID:-}"
 API_URL="${API_URL:-}"
 API_TOKEN="${API_TOKEN:-}"
+PANEL_TOKEN="${PANEL_TOKEN:-}"
 RELEASE_TAG="${RELEASE_TAG:-latest}"
 
 while [[ $# -gt 0 ]]; do
@@ -106,6 +108,14 @@ while [[ $# -gt 0 ]]; do
         exit 1
       fi
       API_TOKEN="$2"
+      shift 2
+      ;;
+    --panel-token)
+      if [[ $# -lt 2 ]]; then
+        echo "--panel-token 缺少参数"
+        exit 1
+      fi
+      PANEL_TOKEN="$2"
       shift 2
       ;;
     --version)
@@ -150,6 +160,15 @@ if [[ -z "${API_TOKEN}" ]]; then
 fi
 if [[ -z "${API_TOKEN}" ]]; then
   echo "API Token 不能为空"
+  exit 1
+fi
+
+if [[ -z "${PANEL_TOKEN}" ]]; then
+  read -r -s -p "请输入 Panel Token: " PANEL_TOKEN
+  echo
+fi
+if [[ -z "${PANEL_TOKEN}" ]]; then
+  echo "Panel Token 不能为空"
   exit 1
 fi
 
@@ -251,8 +270,8 @@ chmod +x "$BIN_PATH"
 echo "下载 config.example.yaml..."
 download_text "$RAW_BASE_URL/configs/config.example.yaml" > "$CFG_PATH"
 
-export NODE_ID API_URL API_TOKEN
-"$YQ_BIN" eval '.node.id = env(NODE_ID) | .api.url = strenv(API_URL) | .api.token = strenv(API_TOKEN)' -i "$CFG_PATH"
+export NODE_ID API_URL API_TOKEN PANEL_TOKEN
+"$YQ_BIN" eval '.node.id = env(NODE_ID) | .api.url = strenv(API_URL) | .api.token = strenv(API_TOKEN) | .panel.token = strenv(PANEL_TOKEN)' -i "$CFG_PATH"
 
 cat > "$SERVICE_FILE" <<EOF
 [Unit]
