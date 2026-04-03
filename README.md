@@ -199,7 +199,7 @@ Auto block 运维说明见：`docs/auto-block-operations.md`
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/jashok5/shadowsocks-go/main/scripts/deploy_linux.sh | \
-  sudo bash -s -- --node-id 1 --api-url https://api.example.com --api-token your_token --version v1.0.0
+  sudo bash -s -- --node-id 1 --api-url https://api.example.com --api-token your_api_token --panel-token your_panel_token --version v1.0.0
 ```
 
 示例（交互模式，手动输入参数）：
@@ -213,6 +213,7 @@ curl -fsSL https://raw.githubusercontent.com/jashok5/shadowsocks-go/main/scripts
 - `--node-id`：节点 ID（必填，可交互输入）
 - `--api-url`：后端 API 地址（必填，可交互输入）
 - `--api-token`：后端 API Token（必填，可交互输入，输入时不回显）
+- `--panel-token`：面板鉴权 Token（必填，可交互输入，输入时不回显）
 - `--version`：指定发布标签（可选，默认 `latest`）
 
 ### 2.2 Linux 手动升级（保留旧配置并合并新字段）
