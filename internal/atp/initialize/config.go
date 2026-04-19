@@ -52,8 +52,6 @@ type ReportIntervals struct {
 }
 
 type PolicyConfig struct {
-	DefaultUserMbps       float64       `mapstructure:"default_user_mbps"`
-	DefaultNodeMbps       float64       `mapstructure:"default_node_mbps"`
 	MaxConnsPerUser       int           `mapstructure:"max_conns_per_user"`
 	MaxOpenStreamsPerUser int           `mapstructure:"max_open_streams_per_user"`
 	EnableAuditBlock      bool          `mapstructure:"enable_audit_block"`

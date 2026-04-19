@@ -47,9 +47,6 @@ type ATPConfig struct {
 	Users    []model.User
 	Rules    []model.DetectRule
 
-	Listen           string
-	Port             int
-	Transport        string
 	HandshakeTimeout time.Duration
 	IdleTimeout      time.Duration
 	ResumeTicketTTL  time.Duration
@@ -57,8 +54,6 @@ type ATPConfig struct {
 	CertReadyTimeout time.Duration
 	CertRetryGap     time.Duration
 
-	DefaultUserMbps       float64
-	DefaultNodeMbps       float64
 	MaxConnsPerUser       int
 	MaxOpenStreamsPerUser int
 	EnableAuditBlock      bool

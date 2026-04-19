@@ -191,9 +191,6 @@ func (s *Service) syncOnce(ctx context.Context) error {
 			Users:    users,
 			Rules:    rules,
 
-			Listen:           s.cfg.RT.ATP.Listen,
-			Port:             s.cfg.RT.ATP.Port,
-			Transport:        s.cfg.RT.ATP.Transport,
 			HandshakeTimeout: s.cfg.RT.ATP.HandshakeTimeout,
 			IdleTimeout:      s.cfg.RT.ATP.IdleTimeout,
 			ResumeTicketTTL:  s.cfg.RT.ATP.ResumeTicketTTL,
@@ -201,8 +198,6 @@ func (s *Service) syncOnce(ctx context.Context) error {
 			CertReadyTimeout: s.cfg.RT.ATP.CertReadyTimeout,
 			CertRetryGap:     s.cfg.RT.ATP.CertRetryGap,
 
-			DefaultUserMbps:       s.cfg.RT.ATP.DefaultUserMbps,
-			DefaultNodeMbps:       s.cfg.RT.ATP.DefaultNodeMbps,
 			MaxConnsPerUser:       s.cfg.RT.ATP.MaxConnsPerUser,
 			MaxOpenStreamsPerUser: s.cfg.RT.ATP.MaxOpenStreamsPerUser,
 			EnableAuditBlock:      s.cfg.RT.ATP.EnableAuditBlock,

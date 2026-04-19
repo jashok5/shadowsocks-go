@@ -27,6 +27,8 @@ import (
 var (
 	atpBuildTLSConfig                = atpInit.BuildTLSConfig
 	atpEnsureCertificateReadyWithTry = atpInit.EnsureCertificateReadyWithRetry
+	atpReadCertificateCacheState     = atpInit.ReadCertificateCacheState
+	atpStartACMEChallengeListener    = atpInit.StartACMEChallengeListener
 	atpStartCertificateMaintenance   = atpInit.StartCertificateMaintenance
 )
 
@@ -129,7 +131,7 @@ func (d *ATPDriver) ApplyATP(ctx context.Context, cfg ATPConfig) error {
 		d.minRestartGap = 0
 	}
 	if d.limiter == nil {
-		d.limiter = atpLimiter.NewManager(cfg.DefaultUserMbps)
+		d.limiter = atpLimiter.NewManager()
 	}
 	d.applyNodeAndUsersLocked(cfg)
 	d.applyRulesLocked(cfg.Rules)
@@ -145,18 +147,9 @@ func (d *ATPDriver) ApplyATP(ctx context.Context, cfg ATPConfig) error {
 
 	panelNode := toATPPanelNode(cfg.NodeInfo)
 	resolvedPort, resolvedTransport := atpInit.ParsePortAndTransportFromNode(panelNode)
-	listen := strings.TrimSpace(cfg.Listen)
-	if listen == "" {
-		listen = "0.0.0.0"
-	}
-	if resolvedPort <= 0 {
-		resolvedPort = cfg.Port
-	}
+	listen := "0.0.0.0"
 	if resolvedPort <= 0 {
 		resolvedPort = 443
-	}
-	if resolvedTransport == "" {
-		resolvedTransport = strings.TrimSpace(cfg.Transport)
 	}
 	if resolvedTransport == "" {
 		resolvedTransport = "tls"
@@ -190,6 +183,10 @@ func (d *ATPDriver) ApplyATP(ctx context.Context, cfg ATPConfig) error {
 	if err != nil {
 		return err
 	}
+	cacheState, err := atpReadCertificateCacheState(ctx, sni)
+	if err != nil {
+		return err
+	}
 	certReadyTimeout := cfg.CertReadyTimeout
 	if certReadyTimeout <= 0 {
 		certReadyTimeout = 2 * time.Minute
@@ -198,10 +195,41 @@ func (d *ATPDriver) ApplyATP(ctx context.Context, cfg ATPConfig) error {
 	if certRetryGap <= 0 {
 		certRetryGap = 3 * time.Second
 	}
-	if err = atpEnsureCertificateReadyWithTry(ctx, d.log, tlsCfg, sni, certReadyTimeout, certRetryGap); err != nil {
-		d.log.Warn("atp certificate prepare failed, keeping current proxy", zap.Error(err), zap.String("sni", sni))
-		d.logHealthLocked(prevUsers, prevRules, prevListen, prevPort, prevTransport, prevSNI)
-		return err
+	needChallenge := !cacheState.Exists || cacheState.Expired
+	if needChallenge {
+		reason := "missing"
+		if cacheState.Expired {
+			reason = "expired"
+		}
+		d.log.Info("atp certificate challenge listener start", zap.String("listen", listen), zap.Int("port", resolvedPort), zap.String("sni", sni), zap.String("reason", reason))
+		challengeCtx, cancelChallenge := context.WithCancel(context.Background())
+		challengeErrCh := make(chan error, 1)
+		go func() {
+			challengeErrCh <- atpStartACMEChallengeListener(challengeCtx, d.log, listen, resolvedPort, tlsCfg)
+			close(challengeErrCh)
+		}()
+		time.Sleep(200 * time.Millisecond)
+		err = atpEnsureCertificateReadyWithTry(ctx, d.log, tlsCfg, sni, certReadyTimeout, certRetryGap)
+		cancelChallenge()
+		select {
+		case challengeErr, ok := <-challengeErrCh:
+			if ok && challengeErr != nil && !errors.Is(challengeErr, context.Canceled) {
+				d.log.Warn("atp certificate challenge listener stopped with error", zap.Error(challengeErr), zap.String("sni", sni))
+			}
+		case <-time.After(2 * time.Second):
+			d.log.Warn("atp certificate challenge listener stop timeout", zap.String("sni", sni))
+		}
+		if err != nil {
+			d.log.Warn("atp certificate prepare failed, keeping current proxy", zap.Error(err), zap.String("sni", sni))
+			d.logHealthLocked(prevUsers, prevRules, prevListen, prevPort, prevTransport, prevSNI)
+			return err
+		}
+		if notAfter, cacheErr := atpReadCertificateCacheState(ctx, sni); cacheErr == nil && notAfter.Exists {
+			d.certNotAfter = notAfter.NotAfter
+		}
+	} else {
+		d.certNotAfter = cacheState.NotAfter
+		d.log.Info("atp certificate cache valid", zap.String("sni", sni), zap.Time("not_after", cacheState.NotAfter), zap.Duration("remaining", time.Until(cacheState.NotAfter)))
 	}
 	if notAfter, certErr := readCertNotAfter(tlsCfg, sni); certErr == nil {
 		d.certNotAfter = notAfter
@@ -336,8 +364,8 @@ func (d *ATPDriver) Close(ctx context.Context) error {
 
 func (d *ATPDriver) applyNodeAndUsersLocked(cfg ATPConfig) {
 	nodeMbps := cfg.NodeInfo.NodeSpeedLimit
-	if nodeMbps <= 0 {
-		nodeMbps = cfg.DefaultNodeMbps
+	if nodeMbps < 0 {
+		nodeMbps = 0
 	}
 	d.limiter.SetNodeLimit(nodeMbps)
 
@@ -347,8 +375,8 @@ func (d *ATPDriver) applyNodeAndUsersLocked(cfg ATPConfig) {
 		uid := int32(user.ID)
 		live[uid] = struct{}{}
 		mbps := user.NodeSpeed
-		if mbps <= 0 {
-			mbps = cfg.DefaultUserMbps
+		if mbps < 0 {
+			mbps = 0
 		}
 		d.limiter.SetUserLimit(uid, mbps)
 		connLimit := user.NodeConnector

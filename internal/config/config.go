@@ -100,9 +100,6 @@ type RuntimeConfig struct {
 }
 
 type ATPConfig struct {
-	Listen                string        `mapstructure:"listen"`
-	Port                  int           `mapstructure:"port"`
-	Transport             string        `mapstructure:"transport"`
 	HandshakeTimeout      time.Duration `mapstructure:"handshake_timeout"`
 	IdleTimeout           time.Duration `mapstructure:"idle_timeout"`
 	ResumeTicketTTL       time.Duration `mapstructure:"resume_ticket_ttl"`
@@ -116,8 +113,6 @@ type ATPConfig struct {
 	ReportAliveInterval   time.Duration `mapstructure:"report_alive_interval"`
 	ReportDetectInterval  time.Duration `mapstructure:"report_detect_interval"`
 	ReportNodeInterval    time.Duration `mapstructure:"report_node_interval"`
-	DefaultUserMbps       float64       `mapstructure:"default_user_mbps"`
-	DefaultNodeMbps       float64       `mapstructure:"default_node_mbps"`
 	MaxConnsPerUser       int           `mapstructure:"max_conns_per_user"`
 	MaxOpenStreamsPerUser int           `mapstructure:"max_open_streams_per_user"`
 	EnableAuditBlock      bool          `mapstructure:"enable_audit_block"`
@@ -233,17 +228,6 @@ func (c Config) Validate() error {
 	case "", "mock", "ss", "ssr", "atp", "auto":
 	default:
 		return fmt.Errorf("runtime.driver must be one of auto,mock,ss,ssr,atp")
-	}
-	if strings.TrimSpace(c.RT.ATP.Listen) == "" {
-		return fmt.Errorf("runtime.atp.listen is required")
-	}
-	if c.RT.ATP.Port <= 0 || c.RT.ATP.Port > 65535 {
-		return fmt.Errorf("runtime.atp.port must be within 1-65535")
-	}
-	switch strings.ToLower(strings.TrimSpace(c.RT.ATP.Transport)) {
-	case "tls", "quic":
-	default:
-		return fmt.Errorf("runtime.atp.transport must be tls or quic")
 	}
 	if c.RT.ATP.HandshakeTimeout <= 0 {
 		return fmt.Errorf("runtime.atp.handshake_timeout must be > 0")
@@ -389,9 +373,6 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("sync.failure_max_wait", "60s")
 
 	v.SetDefault("runtime.driver", "auto")
-	v.SetDefault("runtime.atp.listen", "0.0.0.0")
-	v.SetDefault("runtime.atp.port", 443)
-	v.SetDefault("runtime.atp.transport", "tls")
 	v.SetDefault("runtime.atp.handshake_timeout", "10s")
 	v.SetDefault("runtime.atp.idle_timeout", "120s")
 	v.SetDefault("runtime.atp.resume_ticket_ttl", "15m")
@@ -405,8 +386,6 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("runtime.atp.report_alive_interval", "20s")
 	v.SetDefault("runtime.atp.report_detect_interval", "5s")
 	v.SetDefault("runtime.atp.report_node_interval", "60s")
-	v.SetDefault("runtime.atp.default_user_mbps", 0)
-	v.SetDefault("runtime.atp.default_node_mbps", 0)
 	v.SetDefault("runtime.atp.max_conns_per_user", 0)
 	v.SetDefault("runtime.atp.max_open_streams_per_user", 256)
 	v.SetDefault("runtime.atp.enable_audit_block", true)

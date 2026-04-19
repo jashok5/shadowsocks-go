@@ -45,7 +45,7 @@ func New(cfg *initialize.Config, logger *zap.Logger) (*App, error) {
 	}
 	store := state.NewStore()
 	usage := reporter.NewCollector()
-	rl := limiter.NewManager(cfg.Policy.DefaultUserMbps)
+	rl := limiter.NewManager()
 	cm := concurrency.NewManager()
 	auditEngine := audit.NewEngine()
 	retryPath := filepath.Join("data", "traffic-retry.json")
@@ -389,8 +389,8 @@ func safeInt64ToInt(v int64) int {
 
 func (a *App) applyNodeLimit(node panel.NodeInfo) {
 	mbps := node.NodeSpeedlimit
-	if mbps <= 0 {
-		mbps = a.cfg.Policy.DefaultNodeMbps
+	if mbps < 0 {
+		mbps = 0
 	}
 	a.limiter.SetNodeLimit(mbps)
 }
@@ -400,8 +400,8 @@ func (a *App) applyUserPolicies(users []panel.UserInfo) {
 	for _, user := range users {
 		live[user.ID] = struct{}{}
 		mbps := user.NodeSpeedlimit
-		if mbps <= 0 {
-			mbps = a.cfg.Policy.DefaultUserMbps
+		if mbps < 0 {
+			mbps = 0
 		}
 		a.limiter.SetUserLimit(user.ID, mbps)
 		limit := user.NodeConnector

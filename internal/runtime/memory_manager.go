@@ -96,7 +96,7 @@ func (m *MemoryManager) Sync(ctx context.Context, in SyncInput) error {
 	for _, u := range in.Users {
 		if u.IsMultiUser == 0 {
 			muUsers[u.ID] = u.Passwd
-			muUserSpeed[u.ID] = maxSpeed(in.NodeInfo.NodeSpeedLimit, u.NodeSpeed)
+			muUserSpeed[u.ID] = resolveSpeedLimit(in.NodeInfo.NodeSpeedLimit, u.NodeSpeed)
 		}
 	}
 
@@ -439,7 +439,7 @@ func buildPortConfig(u model.User, node model.NodeInfo, buckets DetectBuckets, r
 		ObfsParam:      u.ObfsParam,
 		ForbiddenIP:    u.ForbiddenIP,
 		ForbiddenPort:  u.ForbiddenPort,
-		NodeSpeedLimit: maxSpeed(node.NodeSpeedLimit, u.NodeSpeed),
+		NodeSpeedLimit: resolveSpeedLimit(node.NodeSpeedLimit, u.NodeSpeed),
 		NodeTraffic:    node.TrafficRate,
 		IsMultiUser:    u.IsMultiUser != 0,
 		MUHosts:        nil,
@@ -505,8 +505,23 @@ func hashMUHosts(hosts []string) string {
 	return hex.EncodeToString(sum[:])
 }
 
-func maxSpeed(node, user float64) float64 {
-	if node > user {
+func resolveSpeedLimit(node, user float64) float64 {
+	if node < 0 {
+		node = 0
+	}
+	if user < 0 {
+		user = 0
+	}
+	if node == 0 && user == 0 {
+		return 0
+	}
+	if node == 0 {
+		return user
+	}
+	if user == 0 {
+		return node
+	}
+	if node < user {
 		return node
 	}
 	return user

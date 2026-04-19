@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/tls"
 	"crypto/x509"
+	"errors"
 	"fmt"
 	"net"
 	"net/http"
@@ -227,6 +228,42 @@ func parseNodeParams(raw string) map[string]string {
 		out[kv[0]] = kv[1]
 	}
 	return out
+}
+
+type CertificateCacheState struct {
+	Exists   bool
+	Expired  bool
+	NotAfter time.Time
+}
+
+func ReadCertificateCacheState(ctx context.Context, serverName string) (CertificateCacheState, error) {
+	serverName = strings.TrimSpace(strings.ToLower(strings.TrimSuffix(serverName, ".")))
+	if serverName == "" {
+		return CertificateCacheState{}, fmt.Errorf("server name is empty")
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	data, err := autocert.DirCache(defaultACMECacheDir).Get(ctx, serverName)
+	if err != nil {
+		if os.IsNotExist(err) || errors.Is(err, autocert.ErrCacheMiss) {
+			return CertificateCacheState{}, nil
+		}
+		return CertificateCacheState{}, fmt.Errorf("read certificate cache failed: %w", err)
+	}
+	pair, err := tls.X509KeyPair(data, data)
+	if err != nil {
+		return CertificateCacheState{}, fmt.Errorf("parse certificate cache failed: %w", err)
+	}
+	notAfter, err := certNotAfter(&pair)
+	if err != nil {
+		return CertificateCacheState{}, fmt.Errorf("parse cached certificate not_after failed: %w", err)
+	}
+	return CertificateCacheState{
+		Exists:   true,
+		Expired:  !notAfter.After(time.Now()),
+		NotAfter: notAfter,
+	}, nil
 }
 
 func StartACMEChallengeListener(ctx context.Context, logger *zap.Logger, listen string, port int, baseTLS *tls.Config) error {

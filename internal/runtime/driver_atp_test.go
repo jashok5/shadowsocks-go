@@ -16,10 +16,14 @@ func installATPTestTLSHooks(t *testing.T) {
 	t.Helper()
 	origBuildTLS := atpBuildTLSConfig
 	origEnsure := atpEnsureCertificateReadyWithTry
+	origReadState := atpReadCertificateCacheState
+	origStartChallenge := atpStartACMEChallengeListener
 	origStartMaint := atpStartCertificateMaintenance
 	t.Cleanup(func() {
 		atpBuildTLSConfig = origBuildTLS
 		atpEnsureCertificateReadyWithTry = origEnsure
+		atpReadCertificateCacheState = origReadState
+		atpStartACMEChallengeListener = origStartChallenge
 		atpStartCertificateMaintenance = origStartMaint
 	})
 	atpBuildTLSConfig = func(_ *atpInit.Config, _ atpPanel.NodeInfo) (*tls.Config, error) {
@@ -32,6 +36,12 @@ func installATPTestTLSHooks(t *testing.T) {
 		}, nil
 	}
 	atpEnsureCertificateReadyWithTry = func(context.Context, *zap.Logger, *tls.Config, string, time.Duration, time.Duration) error {
+		return nil
+	}
+	atpReadCertificateCacheState = func(context.Context, string) (atpInit.CertificateCacheState, error) {
+		return atpInit.CertificateCacheState{}, nil
+	}
+	atpStartACMEChallengeListener = func(context.Context, *zap.Logger, string, int, *tls.Config) error {
 		return nil
 	}
 	atpStartCertificateMaintenance = func(context.Context, *zap.Logger, *tls.Config, string) {}
@@ -55,14 +65,9 @@ func TestATPDriverSyncAndSnapshot(t *testing.T) {
 		},
 		Rules: []model.DetectRule{{ID: 7, Regex: "example", Type: 1}},
 
-		Listen:                "127.0.0.1",
-		Port:                  18443,
-		Transport:             "tls",
 		HandshakeTimeout:      10 * time.Second,
 		IdleTimeout:           30 * time.Second,
 		ResumeTicketTTL:       2 * time.Minute,
-		DefaultUserMbps:       5,
-		DefaultNodeMbps:       20,
 		MaxConnsPerUser:       2,
 		MaxOpenStreamsPerUser: 32,
 		EnableAuditBlock:      true,
@@ -126,14 +131,9 @@ func TestATPDriverHotReloadBehavior(t *testing.T) {
 		Users:    []model.User{{ID: 2001, UUID: "u2001", Passwd: "p2001", NodeSpeed: 12, NodeConnector: 2}},
 		Rules:    []model.DetectRule{{ID: 11, Regex: "foo", Type: 1}},
 
-		Listen:                "127.0.0.1",
-		Port:                  20443,
-		Transport:             "tls",
 		HandshakeTimeout:      10 * time.Second,
 		IdleTimeout:           30 * time.Second,
 		ResumeTicketTTL:       2 * time.Minute,
-		DefaultUserMbps:       5,
-		DefaultNodeMbps:       10,
 		MaxConnsPerUser:       2,
 		MaxOpenStreamsPerUser: 32,
 		EnableAuditBlock:      true,
@@ -164,7 +164,6 @@ func TestATPDriverHotReloadBehavior(t *testing.T) {
 
 	endpointCfg := policyOnlyCfg
 	endpointCfg.NodeInfo = model.NodeInfo{Sort: 16, Server: "127.0.0.1;port=20444|transport=tls|host=localhost", NodeSpeedLimit: 50}
-	endpointCfg.Port = 20444
 	if err := drv.ApplyATP(ctx, endpointCfg); err != nil {
 		t.Fatalf("endpoint apply failed: %v", err)
 	}
@@ -194,15 +193,10 @@ func TestATPDriverRestartDebounce(t *testing.T) {
 		Users:    []model.User{{ID: 3001, UUID: "u3001", Passwd: "p3001", NodeSpeed: 12, NodeConnector: 2}},
 		Rules:    []model.DetectRule{{ID: 31, Regex: "foo", Type: 1}},
 
-		Listen:                "127.0.0.1",
-		Port:                  21443,
-		Transport:             "tls",
 		HandshakeTimeout:      10 * time.Second,
 		IdleTimeout:           30 * time.Second,
 		ResumeTicketTTL:       2 * time.Minute,
 		RestartDebounce:       2 * time.Hour,
-		DefaultUserMbps:       5,
-		DefaultNodeMbps:       10,
 		MaxConnsPerUser:       2,
 		MaxOpenStreamsPerUser: 32,
 		EnableAuditBlock:      true,
@@ -218,7 +212,6 @@ func TestATPDriverRestartDebounce(t *testing.T) {
 
 	secondCfg := firstCfg
 	secondCfg.NodeInfo = model.NodeInfo{Sort: 16, Server: "127.0.0.1;port=21444|transport=tls|host=localhost", NodeSpeedLimit: 50}
-	secondCfg.Port = 21444
 	if err := drv.ApplyATP(ctx, secondCfg); err != nil {
 		t.Fatalf("second apply failed: %v", err)
 	}
@@ -248,14 +241,9 @@ func TestATPDriverKeepsOldProxyOnCertFailure(t *testing.T) {
 		Users:    []model.User{{ID: 4001, UUID: "u4001", Passwd: "p4001", NodeSpeed: 10, NodeConnector: 2}},
 		Rules:    []model.DetectRule{{ID: 41, Regex: "foo", Type: 1}},
 
-		Listen:                "127.0.0.1",
-		Port:                  22443,
-		Transport:             "tls",
 		HandshakeTimeout:      10 * time.Second,
 		IdleTimeout:           30 * time.Second,
 		ResumeTicketTTL:       2 * time.Minute,
-		DefaultUserMbps:       5,
-		DefaultNodeMbps:       10,
 		MaxConnsPerUser:       2,
 		MaxOpenStreamsPerUser: 32,
 		EnableAuditBlock:      true,
@@ -276,7 +264,6 @@ func TestATPDriverKeepsOldProxyOnCertFailure(t *testing.T) {
 
 	failedCfg := baseCfg
 	failedCfg.NodeInfo = model.NodeInfo{Sort: 16, Server: "127.0.0.1;port=22444|transport=tls|host=localhost", NodeSpeedLimit: 50}
-	failedCfg.Port = 22444
 	err := drv.ApplyATP(ctx, failedCfg)
 	if err == nil {
 		t.Fatalf("expected cert failure error")

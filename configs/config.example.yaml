@@ -38,9 +38,6 @@ sync:
 runtime:
   driver: auto
   atp:
-    listen: 0.0.0.0
-    port: 443
-    transport: tls
     handshake_timeout: 10s
     idle_timeout: 120s
     resume_ticket_ttl: 15m
@@ -54,8 +51,6 @@ runtime:
     report_alive_interval: 20s
     report_detect_interval: 5s
     report_node_interval: 60s
-    default_user_mbps: 0
-    default_node_mbps: 0
     max_conns_per_user: 0
     max_open_streams_per_user: 256
     enable_audit_block: true

@@ -16,15 +16,13 @@ type Manager struct {
 	userLimiter map[int32]*rate.Limiter
 	userApplied map[int32]float64
 	nodeMbps    float64
-	defaultUser float64
 }
 
-func NewManager(defaultUserMbps float64) *Manager {
+func NewManager() *Manager {
 	return &Manager{
 		usersMbps:   make(map[int32]float64),
 		userLimiter: make(map[int32]*rate.Limiter),
 		userApplied: make(map[int32]float64),
-		defaultUser: defaultUserMbps,
 	}
 }
 
@@ -37,8 +35,8 @@ func (m *Manager) SetNodeLimit(mbps float64) {
 func (m *Manager) SetUserLimit(userID int32, mbps float64) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	if mbps <= 0 {
-		mbps = m.defaultUser
+	if mbps < 0 {
+		mbps = 0
 	}
 	m.usersMbps[userID] = mbps
 	delete(m.userLimiter, userID)
@@ -59,8 +57,8 @@ func (m *Manager) WaitN(ctx context.Context, userID int32, n int) error {
 	}
 	m.mu.Lock()
 	userMbps := m.usersMbps[userID]
-	if userMbps <= 0 {
-		userMbps = m.defaultUser
+	if userMbps < 0 {
+		userMbps = 0
 	}
 	effective := minLimit(userMbps, m.nodeMbps)
 	if effective <= 0 {
@@ -84,8 +82,20 @@ func (m *Manager) WaitN(ctx context.Context, userID int32, n int) error {
 }
 
 func minLimit(userMbps, nodeMbps float64) float64 {
-	if userMbps <= 0 || nodeMbps <= 0 {
+	if userMbps < 0 {
+		userMbps = 0
+	}
+	if nodeMbps < 0 {
+		nodeMbps = 0
+	}
+	if userMbps == 0 && nodeMbps == 0 {
 		return 0
+	}
+	if userMbps == 0 {
+		return nodeMbps
+	}
+	if nodeMbps == 0 {
+		return userMbps
 	}
 	if userMbps < nodeMbps {
 		return userMbps
