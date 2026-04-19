@@ -51,6 +51,8 @@ func NewDriver(name string, log *zap.Logger, tuning DriverTuning) (Driver, error
 		return NewSSDriverWithTuning(log, tuning), nil
 	case "ssr":
 		return NewSSRDriverWithTuning(log, tuning), nil
+	case "atp":
+		return NewATPDriver(log), nil
 	default:
 		return nil, fmt.Errorf("unsupported runtime driver: %s", name)
 	}

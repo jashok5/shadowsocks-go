@@ -87,8 +87,8 @@ func BuildUpdater(cfg config.Config, log *zap.Logger, configPath string) (*updat
 	return updater.New(cfg.Update, log, configPath)
 }
 
-func BuildRuntime(cfg config.Config, log *zap.Logger) (runtime.Manager, error) {
-	drv, err := runtime.NewDriver(cfg.RT.Driver, log, runtime.DriverTuning{
+func BuildRuntime(cfg config.Config, resolvedDriver string, log *zap.Logger) (runtime.Manager, error) {
+	drv, err := runtime.NewDriver(resolvedDriver, log, runtime.DriverTuning{
 		MaxUDPSessionPerPort:      cfg.RT.MaxUDPSessionPerPort,
 		MaxUDPResolveCacheEntries: cfg.RT.MaxUDPResolveCacheEntries,
 		HandshakeMaxConcurrent:    cfg.RT.HandshakeMaxConcurrent,
@@ -104,6 +104,8 @@ func BuildRuntime(cfg config.Config, log *zap.Logger) (runtime.Manager, error) {
 func BuildAPIClient(cfg config.Config, log *zap.Logger) *api.Client {
 	httpClient := BuildHTTPClient(cfg.API)
 	apiClient := api.NewClient(httpClient, cfg.API)
+	apiClient.SetNodeID(cfg.Node.ID)
+	apiClient.UpdateRetryPolicy(cfg.API.RetryMax, cfg.API.RetryBackoff, cfg.API.RetryMaxBackoff)
 	apiClient.SetLogger(log)
 	return apiClient
 }

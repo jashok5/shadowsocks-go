@@ -3,6 +3,7 @@ package runtime
 import (
 	"context"
 	"testing"
+	"time"
 
 	"github.com/jashok5/shadowsocks-go/internal/model"
 
@@ -132,5 +133,56 @@ func TestMemoryManagerUnsupportedCipherFail(t *testing.T) {
 	})
 	if err == nil {
 		t.Fatalf("expected error on unsupported cipher with fail mode")
+	}
+}
+
+func TestMemoryManagerWithATPAwareDriver(t *testing.T) {
+	installATPTestTLSHooks(t)
+
+	drv := NewATPDriver(zap.NewNop())
+	mgr := NewMemoryManagerWithDriver(zap.NewNop(), drv, 1)
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+
+	in := SyncInput{
+		NodeInfo: model.NodeInfo{
+			Sort:   16,
+			Server: "127.0.0.1;port=19443|transport=tls|host=localhost",
+		},
+		Users: []model.User{{ID: 1, UUID: "u1", Passwd: "p1", NodeConnector: 1}},
+		Rules: []model.DetectRule{{ID: 1, Regex: "example", Type: 1}},
+		ATP: ATPConfig{
+			NodeInfo:              model.NodeInfo{Sort: 16, Server: "127.0.0.1;port=19443|transport=tls|host=localhost"},
+			Users:                 []model.User{{ID: 1, UUID: "u1", Passwd: "p1", NodeConnector: 1}},
+			Rules:                 []model.DetectRule{{ID: 1, Regex: "example", Type: 1}},
+			Listen:                "127.0.0.1",
+			Port:                  19443,
+			Transport:             "tls",
+			HandshakeTimeout:      10 * time.Second,
+			IdleTimeout:           30 * time.Second,
+			ResumeTicketTTL:       2 * time.Minute,
+			DefaultUserMbps:       5,
+			DefaultNodeMbps:       10,
+			MaxConnsPerUser:       1,
+			MaxOpenStreamsPerUser: 16,
+			EnableAuditBlock:      true,
+			AuditBlockDuration:    10 * time.Minute,
+		},
+	}
+
+	if err := mgr.Sync(ctx, in); err != nil {
+		t.Fatalf("sync failed: %v", err)
+	}
+
+	snap, err := mgr.Snapshot(ctx)
+	if err != nil {
+		t.Fatalf("snapshot failed: %v", err)
+	}
+	if len(snap.PortUser) != 0 {
+		t.Fatalf("expected empty port mapping for atp driver")
+	}
+
+	if err := mgr.Stop(ctx); err != nil {
+		t.Fatalf("stop failed: %v", err)
 	}
 }

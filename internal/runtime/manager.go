@@ -11,6 +11,7 @@ type SyncInput struct {
 	NodeInfo   model.NodeInfo
 	Users      []model.User
 	Rules      []model.DetectRule
+	ATP        ATPConfig
 	MUHost     MUHostRule
 	SwitchRule UserSwitchRule
 	Runtime    Options

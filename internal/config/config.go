@@ -85,6 +85,7 @@ type LogConfig struct {
 
 type RuntimeConfig struct {
 	Driver                    string           `mapstructure:"driver"`
+	ATP                       ATPConfig        `mapstructure:"atp"`
 	ReconcileWorkers          int              `mapstructure:"reconcile_workers"`
 	HandshakeMaxConcurrent    int              `mapstructure:"handshake_max_concurrent"`
 	PerIPHandshakeMax         int              `mapstructure:"per_ip_handshake_max"`
@@ -96,6 +97,31 @@ type RuntimeConfig struct {
 	MaxUDPResolveCacheEntries int              `mapstructure:"max_udp_resolve_cache_entries"`
 	UDPAssocErrorDeltaWarn    int              `mapstructure:"udp_assoc_error_delta_warn"`
 	SwitchRule                SwitchRuleConfig `mapstructure:"switchrule"`
+}
+
+type ATPConfig struct {
+	Listen                string        `mapstructure:"listen"`
+	Port                  int           `mapstructure:"port"`
+	Transport             string        `mapstructure:"transport"`
+	HandshakeTimeout      time.Duration `mapstructure:"handshake_timeout"`
+	IdleTimeout           time.Duration `mapstructure:"idle_timeout"`
+	ResumeTicketTTL       time.Duration `mapstructure:"resume_ticket_ttl"`
+	RestartDebounce       time.Duration `mapstructure:"restart_debounce"`
+	CertReadyTimeout      time.Duration `mapstructure:"cert_ready_timeout"`
+	CertRetryGap          time.Duration `mapstructure:"cert_retry_gap"`
+	PullNodeInfoInterval  time.Duration `mapstructure:"pull_node_info_interval"`
+	PullUsersInterval     time.Duration `mapstructure:"pull_users_interval"`
+	PullDetectInterval    time.Duration `mapstructure:"pull_detect_interval"`
+	ReportTrafficInterval time.Duration `mapstructure:"report_traffic_interval"`
+	ReportAliveInterval   time.Duration `mapstructure:"report_alive_interval"`
+	ReportDetectInterval  time.Duration `mapstructure:"report_detect_interval"`
+	ReportNodeInterval    time.Duration `mapstructure:"report_node_interval"`
+	DefaultUserMbps       float64       `mapstructure:"default_user_mbps"`
+	DefaultNodeMbps       float64       `mapstructure:"default_node_mbps"`
+	MaxConnsPerUser       int           `mapstructure:"max_conns_per_user"`
+	MaxOpenStreamsPerUser int           `mapstructure:"max_open_streams_per_user"`
+	EnableAuditBlock      bool          `mapstructure:"enable_audit_block"`
+	AuditBlockDuration    time.Duration `mapstructure:"audit_block_duration"`
 }
 
 type SwitchRuleConfig struct {
@@ -203,6 +229,67 @@ func (c Config) Validate() error {
 	if c.RT.ReconcileWorkers < 0 {
 		return fmt.Errorf("runtime.reconcile_workers must be >= 0")
 	}
+	switch strings.ToLower(strings.TrimSpace(c.RT.Driver)) {
+	case "", "mock", "ss", "ssr", "atp", "auto":
+	default:
+		return fmt.Errorf("runtime.driver must be one of auto,mock,ss,ssr,atp")
+	}
+	if strings.TrimSpace(c.RT.ATP.Listen) == "" {
+		return fmt.Errorf("runtime.atp.listen is required")
+	}
+	if c.RT.ATP.Port <= 0 || c.RT.ATP.Port > 65535 {
+		return fmt.Errorf("runtime.atp.port must be within 1-65535")
+	}
+	switch strings.ToLower(strings.TrimSpace(c.RT.ATP.Transport)) {
+	case "tls", "quic":
+	default:
+		return fmt.Errorf("runtime.atp.transport must be tls or quic")
+	}
+	if c.RT.ATP.HandshakeTimeout <= 0 {
+		return fmt.Errorf("runtime.atp.handshake_timeout must be > 0")
+	}
+	if c.RT.ATP.IdleTimeout <= 0 {
+		return fmt.Errorf("runtime.atp.idle_timeout must be > 0")
+	}
+	if c.RT.ATP.ResumeTicketTTL <= 0 {
+		return fmt.Errorf("runtime.atp.resume_ticket_ttl must be > 0")
+	}
+	if c.RT.ATP.RestartDebounce < 0 {
+		return fmt.Errorf("runtime.atp.restart_debounce must be >= 0")
+	}
+	if c.RT.ATP.CertReadyTimeout <= 0 {
+		return fmt.Errorf("runtime.atp.cert_ready_timeout must be > 0")
+	}
+	if c.RT.ATP.CertRetryGap <= 0 {
+		return fmt.Errorf("runtime.atp.cert_retry_gap must be > 0")
+	}
+	if c.RT.ATP.PullNodeInfoInterval <= 0 {
+		return fmt.Errorf("runtime.atp.pull_node_info_interval must be > 0")
+	}
+	if c.RT.ATP.PullUsersInterval <= 0 {
+		return fmt.Errorf("runtime.atp.pull_users_interval must be > 0")
+	}
+	if c.RT.ATP.PullDetectInterval <= 0 {
+		return fmt.Errorf("runtime.atp.pull_detect_interval must be > 0")
+	}
+	if c.RT.ATP.ReportTrafficInterval <= 0 {
+		return fmt.Errorf("runtime.atp.report_traffic_interval must be > 0")
+	}
+	if c.RT.ATP.ReportAliveInterval <= 0 {
+		return fmt.Errorf("runtime.atp.report_alive_interval must be > 0")
+	}
+	if c.RT.ATP.ReportDetectInterval <= 0 {
+		return fmt.Errorf("runtime.atp.report_detect_interval must be > 0")
+	}
+	if c.RT.ATP.ReportNodeInterval <= 0 {
+		return fmt.Errorf("runtime.atp.report_node_interval must be > 0")
+	}
+	if c.RT.ATP.MaxOpenStreamsPerUser <= 0 {
+		return fmt.Errorf("runtime.atp.max_open_streams_per_user must be > 0")
+	}
+	if c.RT.ATP.AuditBlockDuration <= 0 {
+		return fmt.Errorf("runtime.atp.audit_block_duration must be > 0")
+	}
 	if c.RT.HandshakeMaxConcurrent < 0 {
 		return fmt.Errorf("runtime.handshake_max_concurrent must be >= 0")
 	}
@@ -301,7 +388,29 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("sync.failure_base_wait", "3s")
 	v.SetDefault("sync.failure_max_wait", "60s")
 
-	v.SetDefault("runtime.driver", "mock")
+	v.SetDefault("runtime.driver", "auto")
+	v.SetDefault("runtime.atp.listen", "0.0.0.0")
+	v.SetDefault("runtime.atp.port", 443)
+	v.SetDefault("runtime.atp.transport", "tls")
+	v.SetDefault("runtime.atp.handshake_timeout", "10s")
+	v.SetDefault("runtime.atp.idle_timeout", "120s")
+	v.SetDefault("runtime.atp.resume_ticket_ttl", "15m")
+	v.SetDefault("runtime.atp.restart_debounce", "3s")
+	v.SetDefault("runtime.atp.cert_ready_timeout", "2m")
+	v.SetDefault("runtime.atp.cert_retry_gap", "3s")
+	v.SetDefault("runtime.atp.pull_node_info_interval", "30s")
+	v.SetDefault("runtime.atp.pull_users_interval", "15s")
+	v.SetDefault("runtime.atp.pull_detect_interval", "30s")
+	v.SetDefault("runtime.atp.report_traffic_interval", "10s")
+	v.SetDefault("runtime.atp.report_alive_interval", "20s")
+	v.SetDefault("runtime.atp.report_detect_interval", "5s")
+	v.SetDefault("runtime.atp.report_node_interval", "60s")
+	v.SetDefault("runtime.atp.default_user_mbps", 0)
+	v.SetDefault("runtime.atp.default_node_mbps", 0)
+	v.SetDefault("runtime.atp.max_conns_per_user", 0)
+	v.SetDefault("runtime.atp.max_open_streams_per_user", 256)
+	v.SetDefault("runtime.atp.enable_audit_block", true)
+	v.SetDefault("runtime.atp.audit_block_duration", "10m")
 	v.SetDefault("runtime.reconcile_workers", 0)
 	v.SetDefault("runtime.handshake_max_concurrent", 0)
 	v.SetDefault("runtime.per_ip_handshake_max", 0)

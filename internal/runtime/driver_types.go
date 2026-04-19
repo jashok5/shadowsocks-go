@@ -42,6 +42,37 @@ type PortConfig struct {
 	DNSPreferIPv4  bool
 }
 
+type ATPConfig struct {
+	NodeInfo model.NodeInfo
+	Users    []model.User
+	Rules    []model.DetectRule
+
+	Listen           string
+	Port             int
+	Transport        string
+	HandshakeTimeout time.Duration
+	IdleTimeout      time.Duration
+	ResumeTicketTTL  time.Duration
+	RestartDebounce  time.Duration
+	CertReadyTimeout time.Duration
+	CertRetryGap     time.Duration
+
+	DefaultUserMbps       float64
+	DefaultNodeMbps       float64
+	MaxConnsPerUser       int
+	MaxOpenStreamsPerUser int
+	EnableAuditBlock      bool
+	AuditBlockDuration    time.Duration
+
+	PullNodeInfoInterval  time.Duration
+	PullUsersInterval     time.Duration
+	PullDetectInterval    time.Duration
+	ReportTrafficInterval time.Duration
+	ReportAliveInterval   time.Duration
+	ReportDetectInterval  time.Duration
+	ReportNodeInterval    time.Duration
+}
+
 type DriverSnapshot struct {
 	Transfer     map[int]model.PortTransfer
 	UserTransfer map[int]model.PortTransfer
@@ -58,4 +89,8 @@ type Driver interface {
 	Stop(context.Context, int) error
 	Snapshot(context.Context) (DriverSnapshot, error)
 	Close(context.Context) error
+}
+
+type ATPAwareDriver interface {
+	ApplyATP(context.Context, ATPConfig) error
 }

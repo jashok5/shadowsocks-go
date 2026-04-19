@@ -79,6 +79,21 @@ export interface SSRStat {
   UserOnlineCount: Record<string, number>
 }
 
+export interface ATPStat {
+  listen: string
+  port: number
+  transport: string
+  sni: string
+  users: number
+  rules: number
+  proxy_active: boolean
+  proxy_generation: number
+  cert_not_after_unix: number
+  cert_remaining_sec: number
+  last_error?: string
+  last_apply_unix: number
+}
+
 export interface OverviewResponse {
   now_unix: number
   version: string
@@ -104,6 +119,7 @@ export interface OverviewResponse {
   }
   ss_stats?: SSStat[]
   ssr_stats?: SSRStat[]
+  atp_stats?: ATPStat
 }
 
 export interface UserDetailResponse {

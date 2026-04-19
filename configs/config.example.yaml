@@ -36,7 +36,30 @@ sync:
   failure_max_wait: 60s
 
 runtime:
-  driver: ssr
+  driver: auto
+  atp:
+    listen: 0.0.0.0
+    port: 443
+    transport: tls
+    handshake_timeout: 10s
+    idle_timeout: 120s
+    resume_ticket_ttl: 15m
+    restart_debounce: 3s
+    cert_ready_timeout: 2m
+    cert_retry_gap: 3s
+    pull_node_info_interval: 30s
+    pull_users_interval: 15s
+    pull_detect_interval: 30s
+    report_traffic_interval: 10s
+    report_alive_interval: 20s
+    report_detect_interval: 5s
+    report_node_interval: 60s
+    default_user_mbps: 0
+    default_node_mbps: 0
+    max_conns_per_user: 0
+    max_open_streams_per_user: 256
+    enable_audit_block: true
+    audit_block_duration: 10m
   reconcile_workers: 0
   handshake_max_concurrent: 0
   per_ip_handshake_max: 0

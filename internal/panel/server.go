@@ -70,6 +70,7 @@ type OverviewResponse struct {
 	} `json:"mem"`
 	SSStats  []runtime.PortRuntimeStat  `json:"ss_stats,omitempty"`
 	SSRStats []runtime.SSRPortCacheStat `json:"ssr_stats,omitempty"`
+	ATPStats *runtime.ATPRuntimeStat    `json:"atp_stats,omitempty"`
 }
 
 type UserDetailResponse struct {
@@ -426,10 +427,37 @@ func (s *Server) buildOverview(snap runtime.Snapshot) OverviewResponse {
 		case *runtime.SSRDriver:
 			resp.SSRStats = d.CacheStats()
 			s.alignSSROnline(resp.SSRStats, resp.UserList)
+		case *runtime.ATPDriver:
+			stats := d.Stats()
+			resp.ATPStats = &stats
+			if stats.Port > 0 {
+				resp.Ports = stats.Port
+			}
+			resp.WrongIPs = countATPAbnormalIPs(resp.UserList)
 		}
 	}
 
 	return resp
+}
+
+func countATPAbnormalIPs(users []UserOverview) int {
+	if len(users) == 0 {
+		return 0
+	}
+	seen := make(map[string]struct{})
+	for _, u := range users {
+		if u.DetectCount <= 0 {
+			continue
+		}
+		for _, ip := range u.OnlineIPs {
+			ip = strings.TrimSpace(ip)
+			if ip == "" {
+				continue
+			}
+			seen[ip] = struct{}{}
+		}
+	}
+	return len(seen)
 }
 
 func (s *Server) updateOnlineWindow(now time.Time, incoming map[int][]string) {

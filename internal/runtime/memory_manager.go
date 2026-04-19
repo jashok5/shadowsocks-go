@@ -64,6 +64,28 @@ type reconcileOp struct {
 }
 
 func (m *MemoryManager) Sync(ctx context.Context, in SyncInput) error {
+	if atpDrv, ok := m.drv.(ATPAwareDriver); ok {
+		if err := atpDrv.ApplyATP(ctx, in.ATP); err != nil {
+			return err
+		}
+		m.mu.Lock()
+		m.nodeInfo = in.NodeInfo
+		m.rules = append(m.rules[:0], in.Rules...)
+		m.servers = make(map[int]serverState)
+		m.mu.Unlock()
+		m.log.Info("runtime sync reconciled",
+			zap.Int("input_users", len(in.Users)),
+			zap.Int("effective_users", len(in.Users)),
+			zap.Int("desired", 0),
+			zap.Int("active", 0),
+			zap.Int("added", 0),
+			zap.Int("updated", 0),
+			zap.Int("removed", 0),
+			zap.Int("unsupported_skipped", 0),
+		)
+		return nil
+	}
+
 	onUnsupported := strings.ToLower(strings.TrimSpace(in.Runtime.OnUnsupportedCipher))
 	if onUnsupported == "" {
 		onUnsupported = "skip"

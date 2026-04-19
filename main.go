@@ -15,6 +15,7 @@ import (
 	"github.com/jashok5/shadowsocks-go/internal/config"
 	"github.com/jashok5/shadowsocks-go/internal/logger"
 	"github.com/jashok5/shadowsocks-go/internal/transfer"
+	"go.uber.org/zap"
 )
 
 func main() {
@@ -44,16 +45,27 @@ func main() {
 
 	bootstrap.StartDebugServer(cfg, log)
 	apiClient := bootstrap.BuildAPIClient(cfg, log)
+
+	detectCtx, detectCancel := context.WithTimeout(context.Background(), cfg.API.Timeout)
+	resolvedDriver, nodeInfo, err := bootstrap.ResolveRuntimeDriver(detectCtx, cfg, apiClient, log)
+	detectCancel()
+	if err != nil {
+		log.Fatal("resolve runtime driver failed", logger.Err(err))
+	}
+
+	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+	defer stop()
+
 	up, err := bootstrap.BuildUpdater(cfg, log, flags.ConfigPath)
 	if err != nil {
 		log.Fatal("init updater failed", logger.Err(err))
 	}
-	rt, err := bootstrap.BuildRuntime(cfg, log)
+	rt, err := bootstrap.BuildRuntime(cfg, resolvedDriver, log)
 	if err != nil {
 		log.Fatal("init runtime driver failed", logger.Err(err))
 	}
 	svc := bootstrap.BuildService(cfg, flags.ConfigPath, log, apiClient, rt, up, version)
-	panelServer := bootstrap.StartPanelServer(cfg, log, rt, resolvePanelAssets(cfg.Panel.Mode), cfg.RT.Driver, version, startedAt)
+	panelServer := bootstrap.StartPanelServer(cfg, log, rt, resolvePanelAssets(cfg.Panel.Mode), resolvedDriver, version, startedAt)
 	defer func() {
 		if panelServer == nil {
 			return
@@ -65,10 +77,12 @@ func main() {
 		}
 	}()
 
-	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
-	defer stop()
-
-	log.Info("node service started", config.Fields(cfg)...)
+	log.Info("node service started",
+		append(config.Fields(cfg),
+			zap.String("resolved_runtime_driver", resolvedDriver),
+			zap.Int("node_sort", nodeInfo.Sort),
+		)...,
+	)
 	if err = svc.Run(ctx); err != nil && !errors.Is(err, context.Canceled) && !errors.Is(err, transfer.ErrRestartRequired) {
 		log.Fatal("node service stopped with error", logger.Err(err))
 	}

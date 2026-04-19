@@ -101,6 +101,30 @@
           </n-card>
         </n-grid-item>
       </n-grid>
+
+      <n-grid v-if="showATPCard && atpStat" :cols="24" :x-gap="12" :y-gap="12" responsive="screen">
+        <n-grid-item :span="24">
+          <n-card title="ATP 运行状态" size="small">
+            <n-descriptions label-placement="left" :column="1" bordered size="small">
+              <n-descriptions-item label="监听地址">{{ atpStat.listen }}:{{ atpStat.port }}</n-descriptions-item>
+              <n-descriptions-item label="传输协议">{{ atpStat.transport || '-' }}</n-descriptions-item>
+              <n-descriptions-item label="SNI">{{ atpStat.sni || '-' }}</n-descriptions-item>
+              <n-descriptions-item label="代理状态">
+                <n-tag :type="atpStat.proxy_active ? 'success' : 'error'" size="small">
+                  {{ atpStat.proxy_active ? '运行中' : '未运行' }}
+                </n-tag>
+              </n-descriptions-item>
+              <n-descriptions-item label="代理代数">{{ formatNumber(atpStat.proxy_generation || 0) }}</n-descriptions-item>
+              <n-descriptions-item label="用户策略数">{{ formatNumber(atpStat.users || 0) }}</n-descriptions-item>
+              <n-descriptions-item label="审计规则数">{{ formatNumber(atpStat.rules || 0) }}</n-descriptions-item>
+              <n-descriptions-item label="证书到期">{{ atpCertNotAfterText }}</n-descriptions-item>
+              <n-descriptions-item label="证书剩余">{{ atpCertRemainingText }}</n-descriptions-item>
+              <n-descriptions-item label="最近应用">{{ atpLastApplyText }}</n-descriptions-item>
+              <n-descriptions-item label="最近错误">{{ atpStat.last_error || '-' }}</n-descriptions-item>
+            </n-descriptions>
+          </n-card>
+        </n-grid-item>
+      </n-grid>
     </main>
 
     <user-detail-drawer v-model:show="showDetail" :user="userDetail" :loading="dashboard.detailLoading" />
@@ -124,7 +148,7 @@ import {
 import { useAuthStore } from '../stores/auth'
 import { useDashboardStore } from '../stores/dashboard'
 import { formatBytes, formatDateTime, formatDuration, formatNumber } from '../utils/format'
-import type { SSStat, SSRStat, UserOverview } from '../types/panel'
+import type { ATPStat, SSStat, SSRStat, UserOverview } from '../types/panel'
 import KpiTiles from '../components/dashboard/KpiTiles.vue'
 import UserDetailDrawer from '../components/dashboard/UserDetailDrawer.vue'
 import LogsTerminalModal from '../components/logs/LogsTerminalModal.vue'
@@ -203,8 +227,25 @@ const kpiCards = computed(() => [
 const userRows = computed<UserOverview[]>(() => data.value?.user_list || [])
 const ssRows = computed<SSStat[]>(() => data.value?.ss_stats || [])
 const ssrRows = computed<SSRStat[]>(() => data.value?.ssr_stats || [])
+const atpStat = computed<ATPStat | null>(() => data.value?.atp_stats || null)
 const showSSCard = computed(() => (data.value?.driver || '').toLowerCase() === 'ss')
 const showSSRCard = computed(() => (data.value?.driver || '').toLowerCase() === 'ssr')
+const showATPCard = computed(() => (data.value?.driver || '').toLowerCase() === 'atp')
+
+const atpLastApplyText = computed(() => {
+  if (!atpStat.value || !atpStat.value.last_apply_unix) return '-'
+  return formatDateTime(atpStat.value.last_apply_unix)
+})
+
+const atpCertNotAfterText = computed(() => {
+  if (!atpStat.value || !atpStat.value.cert_not_after_unix) return '-'
+  return formatDateTime(atpStat.value.cert_not_after_unix)
+})
+
+const atpCertRemainingText = computed(() => {
+  if (!atpStat.value || !atpStat.value.cert_remaining_sec) return '-'
+  return formatDuration(atpStat.value.cert_remaining_sec)
+})
 
 const userColumns: DataTableColumns<UserOverview> = [
   { title: '用户ID', key: 'user_id', sorter: 'default' },
