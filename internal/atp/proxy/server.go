@@ -165,6 +165,19 @@ func (s *Server) Start(ctx context.Context) error {
 						errCh <- nil
 						return
 					}
+					if isRetriableAcceptErr(acceptErr) {
+						s.logger.Warn("atp listener accept temporary error, retrying",
+							zap.String("addr", listener.Addr()),
+							zap.Error(acceptErr),
+						)
+						select {
+						case <-ctx.Done():
+							errCh <- nil
+							return
+						case <-time.After(200 * time.Millisecond):
+						}
+						continue
+					}
 					errCh <- acceptErr
 					return
 				}
@@ -913,6 +926,23 @@ func isNetClosed(err error) bool {
 	}
 	msg := strings.ToLower(err.Error())
 	return strings.Contains(msg, "use of closed network connection")
+}
+
+func isRetriableAcceptErr(err error) bool {
+	if err == nil {
+		return false
+	}
+	if ne, ok := err.(net.Error); ok {
+		if ne.Timeout() {
+			return true
+		}
+		type temporary interface{ Temporary() bool }
+		if te, ok := any(ne).(temporary); ok && te.Temporary() {
+			return true
+		}
+	}
+	msg := strings.ToLower(err.Error())
+	return strings.Contains(msg, "temporary") || strings.Contains(msg, "resource temporarily unavailable")
 }
 
 func extractNodeToken(server string) string {

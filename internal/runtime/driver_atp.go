@@ -116,7 +116,14 @@ func (d *ATPDriver) ApplyATP(ctx context.Context, cfg ATPConfig) error {
 	defer d.mu.Unlock()
 
 	if err := d.consumeProxyErrLocked(); err != nil {
-		return err
+		d.log.Warn("atp proxy exited, forcing recovery restart",
+			zap.Error(err),
+			zap.String("listen", d.listen),
+			zap.Int("port", d.port),
+			zap.String("transport", d.transport),
+			zap.String("sni", d.tlsSNI),
+		)
+		d.resetProxyStateLocked()
 	}
 
 	prevUsers := len(d.usersByID)
@@ -254,6 +261,21 @@ func (d *ATPDriver) ApplyATP(ctx context.Context, cfg ATPConfig) error {
 func (d *ATPDriver) Stats() ATPRuntimeStat {
 	d.mu.Lock()
 	defer d.mu.Unlock()
+	proxyActive := d.proxy != nil
+	if d.proxyDone != nil {
+		select {
+		case err, ok := <-d.proxyDone:
+			d.proxyDone = nil
+			if ok && err != nil && !errors.Is(err, context.Canceled) {
+				d.lastProxyErr = err
+			}
+			d.proxy = nil
+			d.proxyCtx = nil
+			d.proxyCancel = nil
+			proxyActive = false
+		default:
+		}
+	}
 	st := ATPRuntimeStat{
 		Listen:      d.listen,
 		Port:        d.port,
@@ -261,7 +283,7 @@ func (d *ATPDriver) Stats() ATPRuntimeStat {
 		SNI:         d.tlsSNI,
 		Users:       len(d.usersByID),
 		Rules:       d.ruleCount,
-		ProxyActive: d.proxy != nil,
+		ProxyActive: proxyActive,
 		ProxyGen:    d.proxyGen,
 	}
 	if !d.lastApplyAt.IsZero() {
@@ -556,6 +578,9 @@ func (d *ATPDriver) consumeProxyErrLocked() error {
 	case err, ok := <-d.proxyDone:
 		if !ok {
 			d.proxyDone = nil
+			d.proxy = nil
+			d.proxyCtx = nil
+			d.proxyCancel = nil
 			if d.lastProxyErr != nil {
 				return d.lastProxyErr
 			}
@@ -563,6 +588,10 @@ func (d *ATPDriver) consumeProxyErrLocked() error {
 		}
 		if err != nil && !errors.Is(err, context.Canceled) {
 			d.lastProxyErr = err
+			d.proxyDone = nil
+			d.proxy = nil
+			d.proxyCtx = nil
+			d.proxyCancel = nil
 			return err
 		}
 	default:
@@ -571,6 +600,24 @@ func (d *ATPDriver) consumeProxyErrLocked() error {
 		return d.lastProxyErr
 	}
 	return nil
+}
+
+func (d *ATPDriver) resetProxyStateLocked() {
+	if d.proxyCancel != nil {
+		d.proxyCancel()
+	}
+	if d.certCancel != nil {
+		d.certCancel()
+		d.certCancel = nil
+	}
+	if d.proxy != nil {
+		_ = d.proxy.Close()
+	}
+	d.proxy = nil
+	d.proxyDone = nil
+	d.proxyCtx = nil
+	d.proxyCancel = nil
+	d.lastProxyErr = nil
 }
 
 func toATPPanelNode(n model.NodeInfo) atpPanel.NodeInfo {
