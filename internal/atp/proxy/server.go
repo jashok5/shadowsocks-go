@@ -430,13 +430,6 @@ func (s *Server) serveConn(parent context.Context, conn transport.Conn) {
 			if bridge == nil {
 				continue
 			}
-			if writeErr := bridge.writeFromClient(frame.Header.Type, frame.Payload); writeErr != nil {
-				bridge.close()
-				mu.Lock()
-				delete(bridges, frame.Header.StreamID)
-				mu.Unlock()
-				continue
-			}
 			if s.cfg.Limiter != nil {
 				lctx, lcancel := limiter.ClampCtx(parent, len(frame.Payload))
 				if limErr := s.cfg.Limiter.WaitN(lctx, user.UserID, len(frame.Payload)); limErr != nil {
@@ -448,6 +441,13 @@ func (s *Server) serveConn(parent context.Context, conn transport.Conn) {
 					continue
 				}
 				lcancel()
+			}
+			if writeErr := bridge.writeFromClient(frame.Header.Type, frame.Payload); writeErr != nil {
+				bridge.close()
+				mu.Lock()
+				delete(bridges, frame.Header.StreamID)
+				mu.Unlock()
+				continue
 			}
 			if s.cfg.Reporter != nil {
 				s.cfg.Reporter.AddUpload(user.UserID, len(frame.Payload))

@@ -10,6 +10,28 @@ import (
 	"go.uber.org/zap"
 )
 
+func TestResolveSpeedLimitRules(t *testing.T) {
+	tests := []struct {
+		name string
+		node float64
+		user float64
+		want float64
+	}{
+		{name: "node only", node: 0, user: 50, want: 50},
+		{name: "user only", node: 80, user: 0, want: 80},
+		{name: "both nonzero", node: 80, user: 50, want: 50},
+		{name: "both zero", node: 0, user: 0, want: 0},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := resolveSpeedLimit(tc.node, tc.user); got != tc.want {
+				t.Fatalf("resolveSpeedLimit(%v, %v) = %v, want %v", tc.node, tc.user, got, tc.want)
+			}
+		})
+	}
+}
+
 func TestMemoryManagerMUOnlyAndPortOffset(t *testing.T) {
 	drv := NewMockDriver()
 	mgr := NewMemoryManagerWithDriver(zap.NewNop(), drv, 4)

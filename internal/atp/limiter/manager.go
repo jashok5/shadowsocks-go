@@ -57,10 +57,7 @@ func (m *Manager) WaitN(ctx context.Context, userID int32, n int) error {
 	}
 	m.mu.Lock()
 	userMbps := m.usersMbps[userID]
-	if userMbps < 0 {
-		userMbps = 0
-	}
-	effective := minLimit(userMbps, m.nodeMbps)
+	effective := effectiveLimit(userMbps, m.nodeMbps)
 	if effective <= 0 {
 		m.mu.Unlock()
 		return nil
@@ -101,6 +98,10 @@ func minLimit(userMbps, nodeMbps float64) float64 {
 		return userMbps
 	}
 	return nodeMbps
+}
+
+func effectiveLimit(userMbps, nodeMbps float64) float64 {
+	return minLimit(userMbps, nodeMbps)
 }
 
 func newLimiterFromMbps(mbps float64) *rate.Limiter {
